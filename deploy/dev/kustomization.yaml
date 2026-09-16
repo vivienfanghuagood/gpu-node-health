@@ -1,0 +1,21 @@
+# Validation overlay for node 0024.
+#
+# Difference from the base: the agent runs from source mounted out of a
+# ConfigMap on top of the python:3.12-slim image that is already present on
+# the nodes, instead of a purpose-built image. See render-dev-configmap.sh for
+# why, and for why this must NOT be how the agent reaches 0029/0043.
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+# No global `namespace:` transformer here on purpose: it would rewrite the
+# exporter-discovery Role/RoleBinding out of kube-amd-gpu and into
+# gpu-node-health, silently costing the agent its endpoint-discovery
+# permission (observed as a 403 on the live node). Every manifest carries
+# its own namespace.
+resources:
+  - ../base
+  - agent-source-configmap.yaml
+patches:
+  - path: patch-run-from-source.yaml
+    target:
+      kind: DaemonSet
+      name: gpu-health-agent

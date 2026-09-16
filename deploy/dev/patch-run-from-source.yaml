@@ -1,0 +1,67 @@
+apiVersion: apps/v1
+kind: DaemonSet
+metadata:
+  name: gpu-health-agent
+spec:
+  template:
+    spec:
+      # ConfigMap volumes are mounted read-only, so a second ConfigMap cannot
+      # be mounted at a path INSIDE the first: the kubelet would have to mkdir
+      # the mountpoint in a read-only filesystem. (Verified locally - runc
+      # fails with "create mountpoint ...: read-only file system".) So the two
+      # ConfigMaps are mounted side by side and an init container assembles
+      # the package tree into a writable emptyDir.
+      initContainers:
+        - name: assemble-source
+          image: docker.io/library/python:3.12-slim
+          imagePullPolicy: IfNotPresent
+          command: ["sh", "-c"]
+          args:
+            - |
+              set -eu
+              mkdir -p /app/gpu_health_agent/signals
+              cp /src/pkg/*.py /app/gpu_health_agent/
+              cp /src/sig/*.py /app/gpu_health_agent/signals/
+              python -c "import sys; sys.path.insert(0, '/app'); import gpu_health_agent.main" \
+                && echo "source tree assembled and importable"
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: ["ALL"]
+          volumeMounts:
+            - name: app
+              mountPath: /app
+            - name: src
+              mountPath: /src/pkg
+              readOnly: true
+            - name: src-signals
+              mountPath: /src/sig
+              readOnly: true
+      containers:
+        - name: agent
+          # Already present in containerd on every node in this cluster, so
+          # nothing has to be pulled or transferred.
+          image: docker.io/library/python:3.12-slim
+          imagePullPolicy: IfNotPresent
+          workingDir: /app
+          command: ["python", "-m", "gpu_health_agent.main"]
+          env:
+            - name: PYTHONPATH
+              value: /app
+            - name: PYTHONDONTWRITEBYTECODE
+              value: "1"
+            - name: PYTHONUNBUFFERED
+              value: "1"
+          volumeMounts:
+            - name: app
+              mountPath: /app
+              readOnly: true
+      volumes:
+        - name: app
+          emptyDir: {}
+        - name: src
+          configMap:
+            name: gpu-health-agent-src
+        - name: src-signals
+          configMap:
+            name: gpu-health-agent-src-signals

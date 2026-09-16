@@ -1,0 +1,123 @@
+apiVersion: apps/v1
+kind: DaemonSet
+metadata:
+  name: gpu-health-agent
+  namespace: gpu-node-health
+  labels:
+    app.kubernetes.io/name: gpu-health-agent
+spec:
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: gpu-health-agent
+  updateStrategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxUnavailable: 1
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: gpu-health-agent
+      annotations:
+        # vmagent discovers scrape targets from these (deploy/vmagent.yaml).
+        prometheus.io/scrape: "true"
+        prometheus.io/port: "9101"
+        prometheus.io/path: "/metrics"
+    spec:
+      serviceAccountName: gpu-health-agent
+      # Host PID namespace: the D-state census must see the host's
+      # kworker/u26*+ttm threads. Those stuck workers were the only early
+      # signal available during the August hangs, and they are invisible from
+      # inside a private PID namespace.
+      hostPID: true
+      # Pod network, NOT hostNetwork: the agent needs to reach the exporter's
+      # pod IP on this node, and :9101 is scraped via the pod IP too. Staying
+      # off the host network keeps it from colliding with anything on 9101.
+      hostNetwork: false
+      priorityClassName: system-node-critical
+      terminationGracePeriodSeconds: 10
+      # Run everywhere, including nodes the guard has already cordoned or
+      # tainted. A health agent that evacuates itself the moment a node goes
+      # bad is blind exactly when it matters most.
+      tolerations:
+        - operator: Exists
+      # Per-node opt-in rather than feature.node.kubernetes.io/amd-gpu, so the
+      # rollout can be staged one node at a time on a cluster whose entire
+      # serving capacity is two nodes:
+      #   kubectl label node wx-ms-w7900d-0024 gpu-health.amd.io/agent=true
+      # Removing the label is the rollback. Trade-off: new GPU nodes must be
+      # labelled explicitly - fold this into node provisioning once the agent
+      # has been trusted in production for a full incident cycle (~1 month).
+      nodeSelector:
+        gpu-health.amd.io/agent: "true"
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 10001
+        runAsGroup: 10001
+        # gid 4 == adm, the group owning /var/log/kern.log (root:adm 0640).
+        # This is what buys log access instead of running the agent as root.
+        supplementalGroups: [4]
+      containers:
+        - name: agent
+          image: gpu-node-health/gpu-health-agent:dev
+          imagePullPolicy: IfNotPresent
+          ports:
+            - name: metrics
+              containerPort: 9101
+          env:
+            - name: NODE_NAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: spec.nodeName
+            # Observer mode. The agent publishes metrics only and writes
+            # nothing to the cluster until this is flipped, per the rollout
+            # plan: trust the metrics first, then let them drive conditions,
+            # then let conditions drive the guard.
+            - name: NODE_CONDITIONS_ENABLED
+              value: "false"
+            - name: COLLECT_INTERVAL_SECONDS
+              value: "15"
+            # Persistent files only. dmesg is a ring buffer and had already
+            # wrapped on every long-uptime node in this fleet, destroying the
+            # evidence for the August incidents.
+            - name: KERNLOG_PATHS
+              value: "/var/log/kern.log,/var/log/syslog"
+            # Empty => discover the exporter endpoint on THIS node via
+            # EndpointSlice. See deploy/rbac.yaml.
+            - name: EXPORTER_URL
+              value: ""
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+          resources:
+            requests:
+              cpu: 20m
+              memory: 64Mi
+            limits:
+              # No CPU limit on purpose: throttling the health agent on a node
+              # under GPU-hang load is how you turn a detectable incident back
+              # into a silent one.
+              memory: 192Mi
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: 9101
+            initialDelaySeconds: 15
+            periodSeconds: 30
+            failureThreshold: 4
+          readinessProbe:
+            httpGet:
+              path: /readyz
+              port: 9101
+            initialDelaySeconds: 5
+            periodSeconds: 15
+          volumeMounts:
+            - name: varlog
+              mountPath: /var/log
+              readOnly: true
+      volumes:
+        - name: varlog
+          hostPath:
+            path: /var/log
+            type: Directory

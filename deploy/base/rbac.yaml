@@ -1,0 +1,71 @@
+# The agent's ServiceAccount is deliberately separate from the guard's.
+#
+# The agent observes and reports; it can patch nodes/status (conditions) but
+# has NO access to nodes (the object itself), so it cannot cordon, taint, or
+# label anything even if it is compromised or buggy. Cordon lives in the
+# guard's SA, which is defined in deploy/guard-rbac.yaml.
+#
+# Note for the platform team (see F3 in the plan): the existing
+# ValidatingAdmissionPolicy in the lablab cluster forbids automated taint and
+# annotation changes. This SA touches neither - it writes only
+# .status.conditions, which that policy does not restrict. The cordon
+# permission the guard needs is requested separately and explicitly.
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: gpu-health-agent
+  namespace: gpu-node-health
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: gpu-health-agent
+rules:
+  # Read the Node to confirm identity; patch only its status conditions.
+  - apiGroups: [""]
+    resources: ["nodes"]
+    verbs: ["get", "list", "watch"]
+  - apiGroups: [""]
+    resources: ["nodes/status"]
+    verbs: ["patch"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: gpu-health-agent
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: gpu-health-agent
+subjects:
+  - kind: ServiceAccount
+    name: gpu-health-agent
+    namespace: gpu-node-health
+---
+# Namespace-scoped, read-only: find the AMD metrics-exporter pod running on
+# THIS node. The exporter Service is a ClusterIP in front of a DaemonSet of
+# non-hostNetwork pods, so scraping the service address would round-robin onto
+# a neighbour's exporter and report its GPUs as ours.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: gpu-health-agent-exporter-discovery
+  namespace: kube-amd-gpu
+rules:
+  - apiGroups: ["discovery.k8s.io"]
+    resources: ["endpointslices"]
+    verbs: ["get", "list"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: gpu-health-agent-exporter-discovery
+  namespace: kube-amd-gpu
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: gpu-health-agent-exporter-discovery
+subjects:
+  - kind: ServiceAccount
+    name: gpu-health-agent
+    namespace: gpu-node-health
