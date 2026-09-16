@@ -111,16 +111,27 @@ hangs.
 
 ## Validated on the cluster
 
-On 0024, 2026-09-16, in observer mode:
+2026-09-16, observer mode, on 0024 (stress node), 0029 and 0043 (the two
+serving nodes). 0004/0005/0006 are deliberately untouched — they carry
+important services.
+
+On 0024, fault detection:
 
 - kernel log and `/proc` both readable as uid 10001 + gid 4 (no root)
 - synthetic `MES might be in unrecoverable state` and
   `kworker/u266:9 blocked for more than 122 seconds` injected via `/dev/kmsg`
   were detected within 30s and raised `GPUUnrecoverable` and
   `GPUWorkqueueStalled`, each carrying the triggering log line
-- exporter discovery correctly reported *no exporter on this node* rather than
-  scraping one of the five on other nodes
+- 0024 has no exporter, and the agent reported *no exporter on this node*
+  rather than scraping one of the five on other nodes
 
-S4's success path is still unvalidated on a live node: 0024 has no exporter.
-The safe target is a cordoned, tenant-free control-plane node (0004/0005/0006),
-which has an exporter but carries no tenants.
+On 0029 and 0043, the exporter path:
+
+- both reachable, 8/8 GPUs healthy, ~55ms scrape
+- each resolved its **own** node's exporter pod — 0029 → `10.232.11.237`,
+  0043 → `10.232.30.197`, matching the EndpointSlice `nodeName` mapping. This
+  is the misattribution case the resolver exists for, confirmed live.
+- no conditions active on either node
+
+Not yet validated: S5 (no node carries the D1–D7 patch set yet) and the
+`gpu_health=0` branch of S4 (no GPU has gone unhealthy since rollout).
