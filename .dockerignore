@@ -1,0 +1,9 @@
+# Host-built bytecode must never land in the image: it is compiled by whatever
+# Python happens to be on the build machine (3.10 here, 3.12 in the image) and
+# would be silently ignored at best.
+__pycache__/
+*.pyc
+.pytest_cache/
+.git/
+deploy/
+tests/

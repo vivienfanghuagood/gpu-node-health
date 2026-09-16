@@ -2,7 +2,11 @@
 # that are already sick, and it must not become another thing to debug during
 # an incident. A plain slim base is the whole image - notably NOT a ROCm image,
 # which would be ~10GB and slow to pull onto a degraded node.
-FROM python:3.12-slim
+# Overridable because docker.io is unreachable from the build node inside the
+# Radeon cloud network; build there with
+#   --build-arg BASE_IMAGE=docker.m.daocloud.io/library/python:3.12-slim
+ARG BASE_IMAGE=python:3.12-slim
+FROM ${BASE_IMAGE}
 
 # Do not write .pyc into the read-only-ish container fs; flush logs immediately
 # so kubectl logs shows the last line before a crash.

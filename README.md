@@ -15,7 +15,7 @@ The guiding rule for everything here: **silence must never read as health.**
 
 | Component | Form | Status |
 |---|---|---|
-| `gpu-health-agent` | DaemonSet, one per GPU node | built, running on 0024 in observer mode |
+| `gpu-health-agent` | DaemonSet, one per GPU node | running on 0024/0029/0043 in observer mode |
 | `gpu-node-guard` | Deployment, leader-elected | not started |
 
 The agent only observes and reports. Cordoning lives in the guard, a separate
@@ -74,22 +74,59 @@ on every GPU node would be a worse trade than the incident it prevents.
 ## Deploying
 
 ```sh
-kubectl apply -k deploy/dev                       # validation overlay
+kubectl apply -k deploy/base
 kubectl label node <node> gpu-health.amd.io/agent=true
 ```
 
 Rollout is per-node opt-in via that label, because the cluster's entire serving
 capacity is two nodes (0029 and 0043). Removing the label is the rollback.
 
-`deploy/dev` runs the agent from source mounted out of a ConfigMap on top of
-`python:3.12-slim`, which is already present in containerd on every node. This
-is a **validation mechanism only** — the cluster is reachable through a slow
-tunnel, a 49MB image tar would not transfer, and there is no internal registry.
-Before the agent goes anywhere near 0029/0043, build the image from
-`Dockerfile` and push it somewhere the nodes can pull from: ConfigMap-mounted
-source has no immutable digest and no way to roll back to a known build.
+The image is pinned **by digest**, not by tag — a node quietly running a
+different build than the one that was validated is the same class of silent
+drift this project exists to remove.
 
-Regenerate the source ConfigMaps after editing the agent:
+### Building and publishing the image
+
+The image lives in the cluster's Harbor, which is reachable at
+`36.150.116.202:1808` from inside the Radeon cloud network and at
+`10.5.10.12:1808` from the nodes. Every node's containerd already trusts both
+over plain HTTP via `/etc/containerd/certs.d`, so **no node-level change is
+needed** to pull.
+
+Harbor is *not* reachable from outside that network: from a dev box the TCP
+connect succeeds and the first byte of payload is met with a reset. So the
+build and push run on a node. `docker.io` is unreachable from there too, hence
+the `BASE_IMAGE` build arg:
+
+```sh
+# on wx-ms-w7900d-0004, with the repo contents in ~/gha-build
+sudo docker build \
+  --build-arg BASE_IMAGE=docker.m.daocloud.io/library/python:3.12-slim \
+  -t 10.5.10.12:1808/radeon-cloud-global/gpu-health-agent:<ver> .
+
+# Push via ctr, not docker. Harbor speaks plain HTTP, and teaching dockerd
+# about an insecure registry means editing daemon.json - the build hosts run
+# other people's long-lived containers, so a daemon reload is not ours to do.
+# ctr takes --plain-http per invocation and touches no shared config.
+sudo docker save 10.5.10.12:1808/radeon-cloud-global/gpu-health-agent:<ver> \
+  | sudo ctr -n k8s.io images import --all-platforms -
+sudo ctr -n k8s.io images push --plain-http -u <user>:<pass> \
+  10.5.10.12:1808/radeon-cloud-global/gpu-health-agent:<ver>
+```
+
+Push to `radeon-cloud-global` or `library`. `radeon-cloud-user` is a
+**proxy-cache project** and rejects pushes (`can not push artifact to a proxy
+project`).
+
+Then put the digest ctr printed into `deploy/base/agent-daemonset.yaml`.
+
+### deploy/dev
+
+`deploy/dev` runs the agent from source mounted out of a ConfigMap on top of
+`python:3.12-slim`. It predates Harbor access and is kept only for iterating
+without a registry round-trip; it has no immutable digest and no way to roll
+back to a known build, so **production uses `deploy/base`**. Regenerate the
+source ConfigMaps after editing the agent:
 
 ```sh
 ./deploy/render-dev-configmap.sh
@@ -132,6 +169,10 @@ On 0029 and 0043, the exporter path:
   0043 → `10.232.30.197`, matching the EndpointSlice `nodeName` mapping. This
   is the misattribution case the resolver exists for, confirmed live.
 - no conditions active on either node
+
+Later the same day all three nodes were moved off the ConfigMap overlay onto
+the digest-pinned Harbor image, and re-checked: same exporter URLs, same 8/8,
+no init container left in the pod spec.
 
 Not yet validated: S5 (no node carries the D1–D7 patch set yet) and the
 `gpu_health=0` branch of S4 (no GPU has gone unhealthy since rollout).
