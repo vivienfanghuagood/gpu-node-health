@@ -94,7 +94,11 @@ class ExporterProbe:
 
     def collect(self):
         started = time.monotonic()
+        url = ""
         try:
+            # Surfaced in /debug as "url": an operator checking whether a node
+            # is scraping its OWN exporter should not have to exec into the
+            # pod and re-run the resolver by hand.
             url = self._url or self._resolver.url()
             with urllib.request.urlopen(url, timeout=self._timeout) as resp:
                 body = resp.read().decode("utf-8", errors="replace")
@@ -102,14 +106,15 @@ class ExporterProbe:
         except Exception as exc:  # noqa: BLE001
             # Deliberately broad: urllib errors, OSError, and K8sError/LookupError
             # from the endpoint resolver all mean the same thing here. Any
-            # failure to reach the
-            # exporter is reported as unreachable rather than raised: a probe
-            # that cannot answer must say so, never stay silent.
+            # failure to reach the exporter is reported as unreachable rather
+            # than raised: a probe that cannot answer must say so, never stay
+            # silent.
             if self._resolver is not None:
                 self._resolver.invalidate()
             return {
                 "reachable": False,
                 "error": str(exc)[:200],
+                "url": url,
                 "scrape_seconds": round(time.monotonic() - started, 3),
                 "gpu_total": 0,
                 "healthy": 0,
@@ -158,6 +163,7 @@ class ExporterProbe:
         return {
             "reachable": True,
             "error": "",
+            "url": url,
             "scrape_seconds": round(elapsed, 3),
             "gpu_total": gpu_total,
             "healthy": healthy,

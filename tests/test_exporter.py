@@ -88,6 +88,18 @@ def test_resolution_is_cached_then_invalidated_on_failure():
     assert client.calls == 2
 
 
+def test_resolved_url_is_reported_so_attribution_is_auditable():
+    """An operator must be able to see WHICH exporter a node scraped."""
+    client = FakeClient(_slice(
+        _ep("10.232.30.197", "wx-ms-w7900d-0043"),
+        _ep("10.232.11.237", "wx-ms-w7900d-0029"),
+    ))
+    out = ExporterProbe("", 1, _resolver(client, "wx-ms-w7900d-0029")).collect()
+    # Unreachable here (nothing is listening in the test), but the URL it
+    # tried must still be recorded - that is the auditable part.
+    assert out["url"] == "http://10.232.11.237:5000/metrics"
+
+
 def test_probe_reports_unreachable_when_discovery_fails():
     """A probe that cannot find its exporter must say so, never pass silently."""
     client = FakeClient(_slice(_ep("10.244.1.7", "wx-ms-w7900d-0043")))
