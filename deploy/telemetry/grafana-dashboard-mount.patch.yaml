@@ -1,0 +1,52 @@
+# Strategic-merge patch for the cluster's existing Grafana Deployment.
+#
+# This one is NOT applied by `kubectl apply -k`. The Grafana Deployment in
+# amd-telemetry predates this project and is not one of our resources, and
+# kustomize can only patch what it also owns. Applying it here would mean
+# adopting somebody else's Deployment into this repo, which would then fight
+# with whoever maintains it. So it is a patch file, applied once, by hand:
+#
+#   kubectl -n amd-telemetry patch deployment grafana \
+#     --patch-file deploy/telemetry/grafana-dashboard-mount.patch.yaml
+#
+# It does two things and touches nothing else:
+#
+#  1. Turns the `dashboards-provider` volume into a projected volume that
+#     merges the existing provider ConfigMap with ours. A ConfigMap volume is
+#     read-only, so a second ConfigMap cannot be mounted inside the first -
+#     projection is the supported way to have two owners share one directory,
+#     and it leaves the original ConfigMap untouched.
+#  2. Adds our dashboards as their own mount, so our JSON and theirs never
+#     land in the same file tree.
+#
+# Both ConfigMaps are generated WITHOUT a name-hash suffix (see
+# kustomization.yaml), because this patch references them by fixed name.
+# That is safe here for a reason that does not hold for vmagent: Grafana's
+# file provider rescans the directory every updateIntervalSeconds, so an
+# edited dashboard is picked up live and no rollout is needed.
+#
+# Caveat, stated rather than discovered later: if the Grafana Deployment is
+# re-applied from its own source, this patch is lost and the GPU Health
+# folder quietly empties. Re-run the patch after any Grafana redeploy.
+spec:
+  template:
+    spec:
+      volumes:
+        - name: dashboards-provider
+          configMap: null
+          projected:
+            defaultMode: 420
+            sources:
+              - configMap:
+                  name: grafana-dashboards-provider
+              - configMap:
+                  name: grafana-dashboards-provider-gpu-health
+        - name: dashboards-gpu-health
+          configMap:
+            name: grafana-dashboard-gpu-health
+            defaultMode: 420
+      containers:
+        - name: grafana
+          volumeMounts:
+            - name: dashboards-gpu-health
+              mountPath: /var/lib/grafana/dashboards-gpu-health

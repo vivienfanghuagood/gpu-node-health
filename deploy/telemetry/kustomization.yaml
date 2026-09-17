@@ -29,3 +29,27 @@ configMapGenerator:
     namespace: amd-telemetry
     files:
       - alertmanager.yml
+
+  # The two Grafana ConfigMaps are the exception to the hash-suffix rule
+  # above, and deliberately so. They are referenced by fixed name from
+  # grafana-dashboard-mount.patch.yaml, which is applied to a Deployment this
+  # kustomization does not own, so kustomize cannot rewrite that reference.
+  # A hash suffix would break the mount on the first dashboard edit.
+  #
+  # The reason a stable name is safe here and not for vmagent: Grafana's file
+  # provider rescans its directory every 30s, so an edited dashboard is picked
+  # up live. vmagent never re-reads its config, which is why that one must
+  # force a rollout.
+  - name: grafana-dashboard-gpu-health
+    namespace: amd-telemetry
+    options:
+      disableNameSuffixHash: true
+    files:
+      - dashboards/gpu-node-health.json
+      - dashboards/gpu-fleet.json
+  - name: grafana-dashboards-provider-gpu-health
+    namespace: amd-telemetry
+    options:
+      disableNameSuffixHash: true
+    files:
+      - gpu-health.yaml=dashboards/provider.yaml

@@ -17,6 +17,8 @@ The guiding rule for everything here: **silence must never read as health.**
 |---|---|---|
 | `gpu-health-agent` | DaemonSet, one per GPU node | running on 0024/0029/0043 in observer mode |
 | telemetry stack | vmagent / vmalert / Alertmanager / KSM / node-exporter | deployed, see [deploy/telemetry](deploy/telemetry/) |
+| dashboards | Grafana, folder "GPU Health" | in the repo; mount patch not applied yet |
+| node tuning | DaemonSet, fleet-wide | written, not applied — see [docs/cluster-faults.md](docs/cluster-faults.md) |
 | `gpu-node-guard` | Deployment, leader-elected | not started |
 
 The agent only observes and reports. Cordoning lives in the guard, a separate

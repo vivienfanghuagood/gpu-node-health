@@ -82,28 +82,75 @@ and credentials from whoever owns the rotation.
 This is stated rather than papered over: a stack that looks like it is
 alerting and is not would be this project's own failure mode, one level up.
 
+## Dashboards
+
+Two, provisioned from `dashboards/` into a **GPU Health** folder in the
+cluster's existing Grafana at `http://36.150.116.200:30091/`.
+
+| Dashboard | Answers |
+|---|---|
+| **GPU Node Health** | is the detection chain alive, and what does it see |
+| **GPU Fleet** | what the AMD exporter sees, per card and per tenant |
+
+The first dashboard is ordered so that *is the chain alive* comes before
+*what is the chain reporting*: the top row puts "agents reporting" next to
+"nodes enrolled", because the gap between those two numbers is the failure
+this project was built for, and it is the one that reads as health everywhere
+else.
+
+Provisioning is deliberately awkward, and the awkwardness is documented in
+[`grafana-dashboard-mount.patch.yaml`](grafana-dashboard-mount.patch.yaml).
+Grafana here predates this project and is not ours; its dashboard directory is
+a ConfigMap volume belonging to somebody else, and a ConfigMap volume is
+read-only, so a second ConfigMap cannot be mounted inside it. The patch turns
+the provider volume into a *projected* volume merging both owners' ConfigMaps
+and gives our dashboards their own mount. It has to be applied by hand, once,
+because kustomize can only patch resources it also owns:
+
+```sh
+kubectl -n amd-telemetry patch deployment grafana \
+  --patch-file deploy/telemetry/grafana-dashboard-mount.patch.yaml
+```
+
+`allowUiUpdates` is **false** for this folder. These dashboards come from git;
+letting the UI save over them would recreate exactly the drift between "what
+was reviewed" and "what is running" that this project exists to remove.
+
 ## Two cluster faults found while deploying this
 
-Both are pre-existing and neither is fixed here, because fixing either means
-touching nodes that carry other people's services.
+Root causes for both are in [`docs/cluster-faults.md`](../../docs/cluster-faults.md),
+with the exact fix for each. Neither is applied yet: all of them touch nodes
+carrying other people's services.
 
 **1. Cluster DNS is broken for every pod.** The kubelets are configured with
-`clusterDNS: 10.232.0.10` while the kube-dns Service actually lives at
-`10.233.0.10`. `kubernetes.default` does not resolve from any pod. Every
-Deployment here carries a `dnsConfig` pointing at the real resolver — a
-workaround, marked as one. The fix is kubelet config plus a kubelet restart on
-every node.
+`clusterDNS: 10.232.0.10` while the kube-dns Service lives at `10.233.0.10` —
+one digit, cluster-wide, since install. `kubernetes.default` does not resolve
+from any pod. Every Deployment here carries a `dnsConfig` pointing at the real
+resolver — a workaround, marked as one in each file. It cannot be fixed with a
+second Service, because 10.232.0.10 is in the pod CIDR, outside the Service
+CIDR the API server allocates from. The fix is kubelet config plus a staged
+kubelet restart.
 
-**2. Three of five AMD metrics exporters are dead and reported Ready.** The
-operator's exporter DaemonSet has **no readiness and no liveness probe**. On
-0004 the exporter hit `gpuagent get metrics failed: DeadlineExceeded` followed
-by `too many open files` on 2026-09-02 and has served nothing since. It is
-still `1/1 Running` and still a Ready endpoint of `default-metrics-exporter`,
-so anything scraping that Service gets connection-refused three times in five.
-0005 and 0006 are in the same state.
+**2. Three of five AMD metrics exporters are dead and reported Ready.** All
+three died on the identical line — `exporter slurm.go:78: too many open
+files` — weeks apart. It is not an fd limit: the process had 12 fds against a
+soft limit of 1024. It is `fs.inotify.max_user_instances`, at the kernel
+default of **128** on every node in the fleet, with uid 0 already holding 138
+instances on 0004. Everything on these nodes runs as root and draws from that
+one pool, so the exporter is simply whichever process started after it ran
+dry — which is why the three deaths look random.
 
-`AMDMetricsExporterDown` is the only thing that currently distinguishes this
-from healthy.
+Nothing noticed for two reasons, both of which had to be true: the container's
+PID 1 is a `bash` wrapper that keeps sleeping after its `gpuagent` child
+becomes a zombie, and the operator's DaemonSet has no readiness or liveness
+probe. The `DeviceConfig` CRD has no field for one and the DaemonSet is
+owner-referenced by the operator, so it cannot be fixed where it belongs.
+
+The ceiling fix is `kubectl apply -k deploy/node-tuning`. The supervision gap
+stays open and is picked up by `gpu-node-guard`.
+
+`AMDMetricsExporterDown` is currently the only thing that distinguishes any of
+this from healthy.
 
 ## Validated
 

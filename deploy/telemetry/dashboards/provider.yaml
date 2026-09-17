@@ -1,0 +1,24 @@
+# Grafana dashboard provider for this project's dashboards.
+#
+# A second provider rather than extra keys in the cluster's existing
+# grafana-dashboard-amd-overview ConfigMap: that one belongs to someone else,
+# and dashboards whose ownership is ambiguous get silently overwritten by the
+# next person who applies their own copy. Its own folder makes ownership
+# readable from the Grafana UI.
+#
+# allowUiUpdates is false on purpose. These dashboards are provisioned from
+# git; letting the UI save over them would recreate exactly the kind of drift
+# between "what was reviewed" and "what is running" that this project exists
+# to remove. Edit the JSON in deploy/telemetry/dashboards/ instead.
+apiVersion: 1
+providers:
+  - name: gpu-health
+    orgId: 1
+    folder: GPU Health
+    type: file
+    disableDeletion: false
+    allowUiUpdates: false
+    updateIntervalSeconds: 30
+    options:
+      path: /var/lib/grafana/dashboards-gpu-health
+      foldersFromFilesStructure: false

@@ -1,0 +1,134 @@
+# Raise fs.inotify.max_user_instances on every node in the fleet.
+#
+# WHY THIS EXISTS
+#
+# Three of the five AMD metrics exporters had been dead for weeks while
+# reporting 1/1 Running. All three died on the identical line:
+#
+#   exporter slurm.go:78: too many open files
+#
+# on three different dates (0006: 2026-08-19, 0004: 2026-09-02,
+# 0005: 2026-09-10). "Too many open files" reads as an fd-limit problem, and
+# it is not: the exporter process had a dozen fds open against a soft limit of
+# 1024. inotify_init1() returns EMFILE - which Go renders with that same
+# string - when the CALLING UID is out of inotify instances, and every node in
+# this fleet sits at the kernel default:
+#
+#   fs.inotify.max_user_instances = 128
+#
+# Measured on 0004: 138 inotify instances already held by uid 0. Everything on
+# these nodes runs as root, so every container's Kubernetes watchers, every
+# log follower and every file watcher draw from the same 128. The exporter is
+# not special; it is simply whichever process happened to start after the pool
+# ran dry. 0029 and 0043 are healthy only because their exporters started
+# earlier - they are one pod-churn away from the same failure, which is why
+# this is fleet-wide and not scoped to the three broken nodes.
+#
+# WHY A DAEMONSET RATHER THAN sysctl ON EACH NODE
+#
+# It survives a node reboot without anybody remembering, it is visible in the
+# same place as everything else this project deploys, and it needs no SSH to
+# nodes that have no SSH alias. The equivalent by hand is
+#
+#   echo 'fs.inotify.max_user_instances = 8192' \
+#     | sudo tee /etc/sysctl.d/99-inotify-instances.conf
+#   sudo sysctl --system
+#
+# on all six nodes; do that instead if node config belongs to a config
+# management system that would revert a live-only change.
+#
+# Raising a ceiling that nothing is near cannot break a running workload:
+# there is no allocation at apply time, only a larger bound. Nothing is
+# restarted. The dead exporter pods must still be deleted afterwards - the
+# limit is what killed them, but nothing is going to retry on its own.
+#
+# 8192 is the value most Kubernetes node-tuning baselines use, and is what
+# kubespray's own inventory recommends for nodes running more than a handful
+# of pods.
+apiVersion: apps/v1
+kind: DaemonSet
+metadata:
+  name: inotify-limits
+  namespace: gpu-node-health
+  labels:
+    app.kubernetes.io/name: inotify-limits
+    app.kubernetes.io/part-of: gpu-node-health
+spec:
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: inotify-limits
+  updateStrategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxUnavailable: 1
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: inotify-limits
+    spec:
+      # Deliberately fleet-wide, including the three cordoned control-plane
+      # nodes: those are exactly the ones whose exporters are dead.
+      tolerations:
+        - operator: Exists
+      # Broken cluster DNS (kubelet clusterDNS 10.232.0.10 vs the real
+      # 10.233.0.10) does not matter here - this pod talks to nothing.
+      hostNetwork: false
+      initContainers:
+        - name: set-limits
+          # Reuses this project's own agent image rather than pulling a new
+          # one into Harbor: it is a python:3.12-slim derivative, already on
+          # every node, and writing a sysctl needs nothing but a root write to
+          # /proc/sys.
+          image: 10.5.10.12:1808/radeon-cloud-global/gpu-health-agent:0.1.0@sha256:d217b8539ceaceb280e4786c8193d68167484485d529c08ca6d4381efb0bdab5
+          imagePullPolicy: IfNotPresent
+          command:
+            - python3
+            - -c
+            - |
+              # Raise only; never lower. If a node has already been tuned
+              # higher by someone else, leave their value alone.
+              import pathlib
+              WANT = {
+                  "fs/inotify/max_user_instances": 8192,
+                  "fs/inotify/max_user_watches": 1048576,
+              }
+              for key, want in WANT.items():
+                  p = pathlib.Path("/proc/sys") / key
+                  cur = int(p.read_text().strip())
+                  if cur >= want:
+                      print(f"{key}: {cur} >= {want}, leaving alone", flush=True)
+                      continue
+                  p.write_text(str(want))
+                  print(f"{key}: {cur} -> {p.read_text().strip()}", flush=True)
+          securityContext:
+            # /proc/sys is read-only in a normal container. This is the whole
+            # reason the pod exists; nothing else here needs privilege, which
+            # is why the long-running container below has none.
+            privileged: true
+          resources:
+            requests:
+              cpu: 10m
+              memory: 16Mi
+            limits:
+              memory: 64Mi
+      containers:
+        # The DaemonSet has to keep a container alive to stay scheduled, but
+        # it has no work to do after the init container. This one holds no
+        # privilege and touches nothing.
+        - name: idle
+          image: 10.5.10.12:1808/radeon-cloud-global/gpu-health-agent:0.1.0@sha256:d217b8539ceaceb280e4786c8193d68167484485d529c08ca6d4381efb0bdab5
+          imagePullPolicy: IfNotPresent
+          command: ["python3", "-c", "import signal; signal.pause()"]
+          resources:
+            requests:
+              cpu: 5m
+              memory: 16Mi
+            limits:
+              memory: 64Mi
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            runAsNonRoot: true
+            runAsUser: 10001
+            capabilities:
+              drop: ["ALL"]
