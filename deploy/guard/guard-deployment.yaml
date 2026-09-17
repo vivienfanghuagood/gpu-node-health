@@ -1,0 +1,138 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: gpu-node-guard
+  namespace: gpu-node-health
+  labels:
+    app.kubernetes.io/name: gpu-node-guard
+spec:
+  # One replica. The Lease exists for the overlap during a rolling update, not
+  # for horizontal scale - there is nothing to scale, the loop is a list call
+  # every 30s against at most seven nodes.
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: gpu-node-guard
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: gpu-node-guard
+      annotations:
+        prometheus.io/scrape: "true"
+        prometheus.io/port: "9102"
+        prometheus.io/path: "/metrics"
+    spec:
+      serviceAccountName: gpu-node-guard
+      # Cluster DNS is broken fleet-wide (kubelet clusterDNS 10.232.0.10 vs the
+      # real kube-dns at 10.233.0.10 - see docs/cluster-faults.md fault 3).
+      # This is a workaround and is marked as one; it goes away when the
+      # kubelet config is fixed. The guard itself reaches the API server by the
+      # KUBERNETES_SERVICE_HOST env var, which is an IP and needs no resolver -
+      # it is exporter scraping by pod IP that this keeps honest.
+      dnsPolicy: None
+      dnsConfig:
+        nameservers: ["10.233.0.10"]
+        searches:
+          - gpu-node-health.svc.cluster.local
+          - svc.cluster.local
+          - cluster.local
+      # Unlike the agent, the guard does NOT tolerate everything. It has no
+      # business running on a node that is already tainted out of service, and
+      # it does not need to be node-local for anything - it talks to the API
+      # server and to pod IPs.
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 10001
+        runAsGroup: 10001
+      containers:
+        - name: guard
+          image: 10.5.10.12:1808/radeon-cloud-global/gpu-node-guard:0.1.0
+          imagePullPolicy: IfNotPresent
+          ports:
+            - name: metrics
+              containerPort: 9102
+          env:
+            - name: POD_NAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.name
+            - name: GUARD_NAMESPACE
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.namespace
+            # observe: evaluate, emit metrics and Events, change nothing.
+            # Do not flip this to "enforce" until all three hold:
+            #   1. a full week of observe with no decision the on-call
+            #      disagrees with,
+            #   2. Alertmanager has a real receiver - "摘除必告警" is
+            #      meaningless while alerts go to the noop receiver,
+            #   3. the fleet has more than two serving nodes, or the floor
+            #      below is consciously lowered by whoever owns capacity.
+            - name: GUARD_MODE
+              value: "observe"
+            # The same label the agent rolls out on, so the guard's view can
+            # never be wider than the set of nodes that actually report health.
+            - name: GUARD_NODE_LABEL_SELECTOR
+              value: "gpu-health.amd.io/agent=true"
+            # Refuse to cordon if fewer than this many healthy schedulable
+            # nodes would remain. On this cluster serving capacity is 0029 and
+            # 0043, so 2 means "never, automatically" - which is the correct
+            # value today, and the refusal it produces is itself the alert.
+            - name: GUARD_MIN_HEALTHY_NODES
+              value: "2"
+            - name: GUARD_MAX_CORDONS_PER_WINDOW
+              value: "1"
+            - name: GUARD_RATE_LIMIT_WINDOW_SECONDS
+              value: "3600"
+            # A condition must hold this long before it counts. Measured from
+            # the condition's lastTransitionTime, which the agent advances only
+            # on a real flip - so this debounce survives a guard restart, which
+            # an in-memory streak counter would not.
+            - name: GUARD_CONDITION_MIN_AGE_SECONDS
+              value: "120"
+            # Deleting the AMD operator's exporter pods. Off until the node
+            # conditions path has been trusted; see deploy/telemetry/README.md
+            # for why an external probe is the only place this can live.
+            - name: GUARD_EXPORTER_SUPERVISION
+              value: "false"
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+          resources:
+            requests:
+              cpu: 10m
+              memory: 64Mi
+            limits:
+              memory: 128Mi
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: 9102
+            initialDelaySeconds: 10
+            periodSeconds: 30
+            failureThreshold: 4
+          readinessProbe:
+            httpGet:
+              path: /readyz
+              port: 9102
+            initialDelaySeconds: 10
+            periodSeconds: 15
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: gpu-node-guard
+  namespace: gpu-node-health
+  labels:
+    app.kubernetes.io/name: gpu-node-guard
+spec:
+  selector:
+    app.kubernetes.io/name: gpu-node-guard
+  ports:
+    - name: metrics
+      port: 9102
+      targetPort: 9102

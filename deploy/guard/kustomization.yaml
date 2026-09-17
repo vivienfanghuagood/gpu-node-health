@@ -1,0 +1,9 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+# No global `namespace:` here. Setting one rewrites cross-namespace resources -
+# it silently moved the kube-amd-gpu Role into gpu-node-health once already,
+# which showed up in production as a 403. Every manifest carries its own.
+resources:
+  - rbac.yaml
+  - guard-deployment.yaml

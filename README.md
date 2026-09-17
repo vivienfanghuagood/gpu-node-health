@@ -19,11 +19,12 @@ The guiding rule for everything here: **silence must never read as health.**
 | telemetry stack | vmagent / vmalert / Alertmanager / KSM / node-exporter | deployed, see [deploy/telemetry](deploy/telemetry/) |
 | dashboards | Grafana, folder "GPU Health" | provisioned and serving at `:30091` |
 | node tuning | DaemonSet, fleet-wide | applied — all 7 nodes 128 → 8192 inotify instances |
-| `gpu-node-guard` | Deployment, leader-elected | not started |
+| `gpu-node-guard` | Deployment, leader-elected | written, observe mode, **not deployed** — needs `patch` on nodes approved, see [guard/](guard/) |
 
 The agent only observes and reports. Cordoning lives in the guard, a separate
 process with a separate ServiceAccount, so a bug in signal collection cannot
-take a node out of service.
+take a node out of service — and the guard never drains and never uncordons,
+neither of which is configurable.
 
 ## Signals
 
@@ -112,9 +113,11 @@ the `BASE_IMAGE` build arg:
 
 ```sh
 # on wx-ms-w7900d-0004, with the repo contents in ~/gha-build
-sudo docker build \
+sudo docker build -f Dockerfile.agent \
   --build-arg BASE_IMAGE=docker.m.daocloud.io/library/python:3.12-slim \
   -t 10.5.10.12:1808/radeon-cloud-global/gpu-health-agent:<ver> .
+
+# The guard is Dockerfile.guard, same recipe, different -t.
 
 # Push via ctr, not docker. Harbor speaks plain HTTP, and teaching dockerd
 # about an insecure registry means editing daemon.json - the build hosts run
@@ -154,9 +157,10 @@ metrics drive conditions, then let conditions drive the guard.
 python3 -m pytest tests/ -q
 ```
 
-Every scenario in `tests/test_conditions.py` is drawn from a real incident, and
+Every scenario in `tests/test_conditions.py` is drawn from a real incident,
 `tests/test_signals.py` matches against verbatim log lines from the August
-hangs.
+hangs, and `tests/test_guard_policy.py` covers the decision that can remove a
+production node — mostly the cases where it correctly refuses to.
 
 ## Validated on the cluster
 

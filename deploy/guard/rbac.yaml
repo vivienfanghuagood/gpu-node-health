@@ -1,0 +1,109 @@
+---
+# The guard's own ServiceAccount, deliberately separate from the agent's.
+#
+# The agent can write .status.conditions on Nodes. The guard can write
+# .spec.unschedulable. Neither can do the other's job, so a bug in signal
+# collection cannot cordon a node and a bug in the guard cannot forge a
+# health signal. That separation is the reason these are two workloads rather
+# than one, and it only means anything if the two SAs stay apart.
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: gpu-node-guard
+  namespace: gpu-node-health
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: gpu-node-guard
+rules:
+  # Read every enrolled node and its conditions.
+  - apiGroups: [""]
+    resources: ["nodes"]
+    verbs: ["get", "list", "watch"]
+  # Cordon. This is the permission that needs a human to approve it, and the
+  # one this whole manifest exists to request: `patch` on nodes is what lets
+  # this process set .spec.unschedulable.
+  #
+  # Note what is NOT here. There is no `create` on pods/eviction and no
+  # `delete` on pods in any namespace but kube-amd-gpu, so this SA cannot
+  # drain a node even if the code were changed to try. The RBAC is the second
+  # lock behind the code's own refusal to drain.
+  - apiGroups: [""]
+    resources: ["nodes"]
+    verbs: ["patch"]
+  # Every action and every refusal is recorded as an Event.
+  - apiGroups: [""]
+    resources: ["events"]
+    verbs: ["create"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: gpu-node-guard
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: gpu-node-guard
+subjects:
+  - kind: ServiceAccount
+    name: gpu-node-guard
+    namespace: gpu-node-health
+---
+# Leader election. One replica today, but a rolling update briefly runs two,
+# and two guards each seeing the other's cordon budget as unspent could cordon
+# two nodes on a two-node cluster.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: gpu-node-guard-lease
+  namespace: gpu-node-health
+rules:
+  - apiGroups: ["coordination.k8s.io"]
+    resources: ["leases"]
+    verbs: ["get", "create", "update"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: gpu-node-guard-lease
+  namespace: gpu-node-health
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: gpu-node-guard-lease
+subjects:
+  - kind: ServiceAccount
+    name: gpu-node-guard
+    namespace: gpu-node-health
+---
+# Exporter supervision, scoped to the one namespace that holds the AMD
+# operator's metrics-exporter pods. Deleting somebody else's pods is a real
+# permission and it is granted here as narrowly as it can be: one namespace,
+# and no `create` - the DaemonSet controller makes the replacement, not us.
+#
+# GUARD_EXPORTER_SUPERVISION defaults to false, so holding this permission is
+# not the same as using it.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: gpu-node-guard-exporter
+  namespace: kube-amd-gpu
+rules:
+  - apiGroups: [""]
+    resources: ["pods"]
+    verbs: ["get", "list", "delete"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: gpu-node-guard-exporter
+  namespace: kube-amd-gpu
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: gpu-node-guard-exporter
+subjects:
+  - kind: ServiceAccount
+    name: gpu-node-guard
+    namespace: gpu-node-health

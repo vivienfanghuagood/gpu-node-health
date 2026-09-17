@@ -8,7 +8,7 @@
 # ConfigMap is the entire payload.
 #
 # This is a validation-rollout mechanism, not the production one. Before the
-# agent goes on 0029/0043, build the image (see Dockerfile) and push it to a
+# agent goes on 0029/0043, build the image (see Dockerfile.agent) and push it to a
 # registry the nodes can pull from; ConfigMap-mounted source has no
 # provenance, no immutable digest, and no way to roll back to a known build.
 #

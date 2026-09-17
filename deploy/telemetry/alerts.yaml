@@ -238,3 +238,94 @@ groups:
           severity: critical
         annotations:
           summary: "{{ $labels.node }}: TTM gave up on a buffer object - VRAM is leaking"
+
+  # The guard watching itself, and the guard's refusals.
+  #
+  # The refusal alerts are the important ones and they are deliberately
+  # page-worthy. "Something is sick enough to cordon and I am not allowed to"
+  # is a strictly worse situation than "something is sick and I cordoned it" -
+  # the node is still taking new tenants. An automated system that declines to
+  # act and says nothing is the same silent-health failure this project exists
+  # to remove, one level up.
+  - name: gpu-node-guard
+    rules:
+      - alert: GPUGuardDown
+        expr: absent(gpuguard_up) or max(gpuguard_up) < 1
+        for: 5m
+        labels:
+          severity: critical
+        annotations:
+          summary: "gpu-node-guard is not running - nothing is watching the node conditions"
+
+      - alert: GPUGuardNoLeader
+        expr: max(gpuguard_is_leader) < 1
+        for: 10m
+        labels:
+          severity: critical
+        annotations:
+          summary: "gpu-node-guard is running but no replica holds the lease - it is evaluating nothing"
+
+      - alert: GPUGuardEvaluationStale
+        expr: time() - max(gpuguard_last_loop_timestamp_seconds) > 300
+        for: 5m
+        labels:
+          severity: critical
+        annotations:
+          summary: "gpu-node-guard has not completed an evaluation in over 5 minutes"
+
+      - alert: GPUGuardCordonRefusedCapacityFloor
+        expr: max by (node, condition) (gpuguard_decision{reason="capacity-floor"}) > 0
+        for: 5m
+        labels:
+          severity: critical
+        annotations:
+          summary: "{{ $labels.node }}: {{ $labels.condition }} warrants a cordon, but the capacity floor blocks it"
+          description: "The node is still schedulable and still taking new tenants. This needs a human to decide whether to drain capacity or accept the risk."
+
+      - alert: GPUGuardCordonRefusedRateLimit
+        expr: max by (node) (gpuguard_decision{reason="rate-limit"}) > 0
+        for: 5m
+        labels:
+          severity: critical
+        annotations:
+          summary: "{{ $labels.node }}: cordon blocked by the rate limit - more than one node went bad at once"
+          description: "Multiple nodes triggering together is a fleet-wide event, not a node-local one. The guard deliberately stops here."
+
+      - alert: GPUGuardCordonRefusedStaleData
+        expr: max by (node) (gpuguard_decision{reason="health-data-stale"}) > 0
+        for: 10m
+        labels:
+          severity: critical
+        annotations:
+          summary: "{{ $labels.node }}: a cordon condition is active but the agent says its own data is stale"
+
+      - alert: GPUGuardWouldHaveCordoned
+        expr: max by (node, condition) (gpuguard_decision{reason="would-cordon"}) > 0
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "{{ $labels.node }}: gpu-node-guard would have cordoned this node, but GUARD_MODE is observe"
+
+      - alert: GPUGuardNodeCordoned
+        expr: increase(gpuguard_cordons_total[10m]) > 0
+        labels:
+          severity: critical
+        annotations:
+          summary: "gpu-node-guard cordoned a node - capacity has dropped and no automatic uncordon will happen"
+
+      - alert: GPUGuardEventsFailing
+        expr: increase(gpuguard_event_errors_total[30m]) > 0
+        labels:
+          severity: warning
+        annotations:
+          summary: "gpu-node-guard cannot record Kubernetes Events - its actions and refusals are going unwitnessed"
+
+      - alert: GPUGuardExporterUnreachable
+        expr: max by (pod, node) (gpuguard_exporter_unreachable_seconds) > 900
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "{{ $labels.node }}: metrics-exporter {{ $labels.pod }} has not answered /metrics in over 15 minutes"
+          description: "The pod is very likely still 1/1 Running - it has neither a readiness nor a liveness probe. Only this counter distinguishes it from healthy."

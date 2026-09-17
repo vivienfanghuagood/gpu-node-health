@@ -1,0 +1,18 @@
+# Same reasoning as Dockerfile.agent: zero third-party dependencies, a plain
+# slim base, unprivileged. The guard has a smaller job than the agent - it
+# talks to the API server and to pod IPs, and touches no host state at all -
+# so there is nothing here about /proc, /var/log, or supplementary groups.
+ARG BASE_IMAGE=python:3.12-slim
+FROM ${BASE_IMAGE}
+
+ENV PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONUNBUFFERED=1
+
+WORKDIR /app
+COPY guard/gpu_node_guard /app/gpu_node_guard
+
+RUN useradd --uid 10001 --no-create-home --shell /usr/sbin/nologin guard
+USER 10001
+
+EXPOSE 9102
+ENTRYPOINT ["python", "-m", "gpu_node_guard.main"]
