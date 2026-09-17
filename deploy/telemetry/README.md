@@ -187,8 +187,9 @@ owner-referenced by the operator, so it cannot be fixed where it belongs.
 The ceiling fix — `kubectl apply -k deploy/node-tuning` — is **applied**: all
 seven nodes went 128 → 8192 on 2026-09-17, so 0024/0029/0043 are no longer one
 pod-churn from the same death. Deleting the three dead pods was authorised and
-issued, and **cannot complete**: fault 1 holds their containers open, so
-`up{job="amd-gpu-exporter"}` is 2/5 and stays there until those nodes reboot.
+issued, and **cannot complete**: fault 1 holds their containers open, so those
+three nodes have no exporter until they reboot. `up{job="amd-gpu-exporter"}` is
+**3/6** — three dead on 0004/0005/0006, three live on 0024/0029/0043.
 The supervision gap stays open and is picked up by `gpu-node-guard`.
 
 `AMDMetricsExporterDown` is currently the only thing that distinguishes any of

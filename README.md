@@ -183,8 +183,9 @@ On 0024, fault detection:
   `kworker/u266:9 blocked for more than 122 seconds` injected via `/dev/kmsg`
   were detected within 30s and raised `GPUUnrecoverable` and
   `GPUWorkqueueStalled`, each carrying the triggering log line
-- 0024 has no exporter, and the agent reported *no exporter on this node*
-  rather than scraping one of the five on other nodes
+- 0024 had no exporter, and the agent reported *no exporter on this node*
+  rather than scraping one of the five on other nodes. **Closed on 2026-09-17**
+  — see below.
 
 On 0029 and 0043, the exporter path:
 
@@ -225,5 +226,25 @@ no init container left in the pod spec.
   clean. See [docs/cluster-faults.md](docs/cluster-faults.md); this is why
   `killed entity` is fatal and SDMA exhaustion is only a warning.
 
-Not yet validated: S5 (no node carries the D1–D7 patch set yet) and the
-`gpu_health=0` branch of S4 (no GPU has gone unhealthy since rollout).
+2026-09-17, 0024 brought up to parity with 0029/0043:
+
+- 0024 carried the GPUs and the driver but not
+  `feature.node.kubernetes.io/amd-gpu=true`, which is the `nodeSelector` on the
+  operator's exporter / device-plugin / node-labeller DaemonSets. That label is
+  hand-applied on this cluster, not discovered — `744b` (W7900D, the whole
+  fleet) appears in none of the operator's NFD rules.
+- **Cordon, not taint.** A custom `NoSchedule` taint kept the operator's
+  DaemonSets off too; `.spec.unschedulable` is tolerated by every DaemonSet
+  automatically, which is why the cordoned 0004/0005/0006 still run exporters.
+  0024 is now monitored and still cannot take a tenant.
+- Result: exporter 8/8 at ~53ms, `GPUProbeFailed` → `False/ExporterHealthy`,
+  `gpu_health` in VictoriaMetrics for 0024, `up{job="amd-gpu-exporter"}` 2/5 →
+  **3/6**. All three dashboards pick 0024 up with no change — every panel is
+  keyed by node.
+- The guard's `healthy_capacity` correspondingly reads **2** instead of 3. That
+  is a correction, not a regression: it counts schedulable nodes, and 0024 had
+  `allocatable amd.com/gpu: 0` the entire time it was being counted.
+
+Not yet validated: S5 (no node carries the D1–D7 patch set yet — none is built,
+let alone installed) and the `gpu_health=0` branch of S4 (no GPU has gone
+unhealthy since rollout).

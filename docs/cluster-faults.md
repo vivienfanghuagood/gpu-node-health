@@ -177,8 +177,8 @@ be read as confirmed-by-behaviour rather than inferred.
 
 Note what this also means: **the DaemonSet will not replace them.** A pod that
 never finishes terminating never frees its slot, so those three nodes have no
-exporter and will have none until they reboot. `up{job="amd-gpu-exporter"}`
-stays at 2/5.
+exporter and will have none until they reboot. Those three are permanently the
+dead half of `up{job="amd-gpu-exporter"}`.
 
 ### The same chain, on two other nodes
 
@@ -348,10 +348,44 @@ FailedKillPod  error killing pod: failed to "KillContainer" ... DeadlineExceeded
 
 This is fault 1 blocking it. The container cannot be torn down while one of its
 tasks is wedged in `D` inside the driver, and the DaemonSet controller will not
-create a replacement until the old pod is gone. So
-`up{job="amd-gpu-exporter"}` stays at 2/5 and `AMDMetricsExporterDown`
-stays firing until those nodes are rebooted. The inotify fix is still what
-stops it happening again on 0024/0029/0043.
+create a replacement until the old pod is gone. So `AMDMetricsExporterDown`
+stays firing for 0004/0005/0006 until those nodes are rebooted. The inotify fix
+is still what stops it happening again on 0024/0029/0043.
+
+### 0024 had no exporter at all, and the reason was a hand-applied label
+
+Separate from the three dead ones. 0024 carried the GPUs, the driver
+(`amdgpu` 6.14.14, 8 cards in the KFD topology) and the PCI feature label
+`feature.node.kubernetes.io/pci-0300_1002.present`, but **not**
+`feature.node.kubernetes.io/amd-gpu=true` — which is the `nodeSelector` on the
+operator's `metrics-exporter`, `device-plugin` and `node-labeller` DaemonSets.
+So it got none of them, `allocatable amd.com/gpu` was 0, and the agent
+correctly reported *no exporter on this node* rather than scraping a
+neighbour's.
+
+The label is **not** produced by node-feature-discovery. The operator's
+`amd-gpu-label-nfd-rule` lists 26 device IDs and `744b` (Radeon Pro W7900D,
+what this entire fleet runs) is in none of them, nor in the `mi210` / `mi300x`
+/ `amd-vgpu` rules. Every node that carries the label got it by hand; 0024 and
+0044 were simply never done. Verified by applying it and watching NFD leave it
+alone across several resync intervals.
+
+Applying it (2026-09-17) placed all three DaemonSets and took
+`up{job="amd-gpu-exporter"}` to **3/6**. One thing had to be got right first:
+**cordon, do not taint.** A custom `NoSchedule` taint keeps tenants off but
+also keeps the operator's DaemonSets off — the desired count stayed at 5 and no
+exporter appeared, because a DaemonSet only tolerates taints it was given.
+`.spec.unschedulable` is different: the DaemonSet controller adds that
+toleration to every DaemonSet pod automatically, which is exactly why the
+already-cordoned 0004/0005/0006 still have exporters. So 0024 is cordoned, not
+tainted, and is now monitored without being schedulable.
+
+A side effect worth stating, because it corrects an earlier number rather than
+changing behaviour: the guard's `healthy_capacity` counts *schedulable* nodes,
+so it read 3 while 0024 was uncordoned-but-unusable (`allocatable` 0). It now
+reads **2**, which is the real serving capacity — 0029 and 0043 — and matches
+the floor. The guard was previously measuring its most important guardrail
+against a node that could never have taken a single pod.
 
 **(c) The supervision gap stays open, so supervise it from outside.** Since
 neither a probe nor a working PID 1 can be had through the operator,
