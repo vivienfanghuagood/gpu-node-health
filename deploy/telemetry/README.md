@@ -84,19 +84,37 @@ alerting and is not would be this project's own failure mode, one level up.
 
 ## Dashboards
 
-Two, provisioned from `dashboards/` into a **GPU Health** folder in the
-cluster's existing Grafana at `http://36.150.116.200:30091/`.
+Three, provisioned from `dashboards/` into a **GPU Health** folder in the
+cluster's existing Grafana at `http://36.150.116.200:30091/`. They are linked
+to each other through the dropdown in the top right.
 
 | Dashboard | Answers |
 |---|---|
 | **GPU Node Health** | is the detection chain alive, and what does it see |
 | **GPU Fleet** | what the AMD exporter sees, per card and per tenant |
+| **GPU Guard** | what the actuator decided, and — far more often — why it decided to do nothing |
 
 The first dashboard is ordered so that *is the chain alive* comes before
 *what is the chain reporting*: the top row puts "agents reporting" next to
 "nodes enrolled", because the gap between those two numbers is the failure
 this project was built for, and it is the one that reads as health everywhere
 else.
+
+**GPU Guard** repeats that ordering for the same reason — "is the guard up and
+elected" comes before "what did it decide", because a guard that is down looks
+exactly like a guard with nothing to report. While the guard runs in observe
+mode the panel that carries the weight is **Would have cordoned (24h)**: it is
+the dry-run record, and it is the evidence that decides whether `enforce` is
+safe to turn on.
+
+Two details on that board are not cosmetic:
+
+- Every singleton gauge is wrapped in `max()`. Without it a rolling restart
+  leaves two `pod` series in the lookback window and a stat panel picks one
+  arbitrarily, so a live guard can read **DOWN**. Observed on 2026-09-17.
+- The exporter panels group by `exporter_pod`, never `pod`. The scrape config
+  relabels `pod` onto every target, so on a `gpuguard_*` series `pod` is the
+  *guard's* pod — grouping by it would collapse all five exporters into one.
 
 Provisioning is deliberately awkward, and the awkwardness is documented in
 [`grafana-dashboard-mount.patch.yaml`](grafana-dashboard-mount.patch.yaml).

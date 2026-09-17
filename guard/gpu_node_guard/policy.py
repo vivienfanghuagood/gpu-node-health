@@ -67,8 +67,12 @@ R_STALE_DATA = "health-data-stale"
 R_OBSERVE_MODE = "observe-mode"
 R_CAPACITY_FLOOR = "capacity-floor"
 R_RATE_LIMIT = "rate-limit"
-R_WOULD_CORDON = "would-cordon"
 R_CORDON = "cordon"
+# There is deliberately no R_WOULD_CORDON. One existed, was never emitted by
+# any code path, and an alert rule matched it anyway - so the most important
+# rule in observe mode ("this node WOULD have been cordoned") could never fire.
+# Every other reason here answers "why did it come out this way", and the
+# observe-mode answer to that is observe-mode. Keep them all one kind of thing.
 
 Decision = collections.namedtuple(
     "Decision", "node action reason level condition message"

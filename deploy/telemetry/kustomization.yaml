@@ -47,6 +47,7 @@ configMapGenerator:
     files:
       - dashboards/gpu-node-health.json
       - dashboards/gpu-fleet.json
+      - dashboards/gpu-guard.json
   - name: grafana-dashboards-provider-gpu-health
     namespace: amd-telemetry
     options:

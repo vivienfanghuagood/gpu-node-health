@@ -1,0 +1,1454 @@
+{
+ "uid": "gpu-guard",
+ "title": "GPU Guard",
+ "description": "What the automatic node-removal component is doing, and - more often - why it is not doing anything. Ordered so that 'is the guard alive and elected' comes before 'what did it decide', because a guard that is down looks exactly like a guard with nothing to report. While it runs in observe mode the panel that matters is 'Would have cordoned': it is the dry-run record that decides whether enforce is safe to turn on.",
+ "tags": [
+  "gpu",
+  "health",
+  "amd",
+  "guard"
+ ],
+ "editable": true,
+ "schemaVersion": 39,
+ "version": 1,
+ "refresh": "30s",
+ "timezone": "browser",
+ "graphTooltip": 1,
+ "time": {
+  "from": "now-6h",
+  "to": "now"
+ },
+ "timepicker": {
+  "refresh_intervals": [
+   "10s",
+   "30s",
+   "1m",
+   "5m",
+   "15m",
+   "1h"
+  ]
+ },
+ "annotations": {
+  "list": []
+ },
+ "links": [
+  {
+   "type": "dashboards",
+   "title": "GPU Health",
+   "tags": [
+    "gpu",
+    "health"
+   ],
+   "asDropdown": true,
+   "icon": "external link",
+   "includeVars": true,
+   "keepTime": true,
+   "targetBlank": false,
+   "tooltip": "",
+   "url": ""
+  }
+ ],
+ "templating": {
+  "list": [
+   {
+    "type": "datasource",
+    "name": "DS",
+    "label": "Data source",
+    "query": "prometheus",
+    "current": {},
+    "hide": 0,
+    "refresh": 1,
+    "regex": "",
+    "skipUrlSync": false
+   }
+  ]
+ },
+ "panels": [
+  {
+   "id": 1,
+   "type": "stat",
+   "title": "Guard",
+   "description": "Is the gpu-node-guard process alive and being scraped. If this is DOWN, nothing else on this dashboard is current - and nothing is watching for nodes that need removing. Wrapped in max() so a rolling restart, which briefly leaves two pod series in the lookback window, cannot make a live guard read DOWN.",
+   "datasource": {
+    "type": "prometheus",
+    "uid": "${DS}"
+   },
+   "gridPos": {
+    "x": 0,
+    "y": 0,
+    "w": 4,
+    "h": 4
+   },
+   "fieldConfig": {
+    "defaults": {
+     "unit": "none",
+     "mappings": [
+      {
+       "type": "value",
+       "options": {
+        "0": {
+         "text": "DOWN",
+         "color": "#d03b3b",
+         "index": 0
+        },
+        "1": {
+         "text": "UP",
+         "color": "#0ca30c",
+         "index": 1
+        }
+       }
+      }
+     ],
+     "thresholds": {
+      "mode": "absolute",
+      "steps": [
+       {
+        "color": "text",
+        "value": null
+       }
+      ]
+     },
+     "color": {
+      "mode": "thresholds"
+     }
+    },
+    "overrides": []
+   },
+   "options": {
+    "reduceOptions": {
+     "calcs": [
+      "lastNotNull"
+     ],
+     "fields": "",
+     "values": false
+    },
+    "orientation": "auto",
+    "textMode": "auto",
+    "colorMode": "value",
+    "graphMode": "none",
+    "justifyMode": "auto",
+    "wideLayout": true
+   },
+   "targets": [
+    {
+     "datasource": {
+      "type": "prometheus",
+      "uid": "${DS}"
+     },
+     "editorMode": "code",
+     "expr": "max(gpuguard_up) OR on() vector(0)",
+     "refId": "A",
+     "range": false,
+     "instant": true,
+     "format": "time_series"
+    }
+   ]
+  },
+  {
+   "id": 2,
+   "type": "stat",
+   "title": "Leader",
+   "description": "The guard only acts while it holds its Lease. It stands down on any API error - a guard that cannot reach the API server also cannot cordon, so the safe reading of an error is 'I am not the leader'. NONE therefore means nothing is being evaluated, even though the process may be UP.",
+   "datasource": {
+    "type": "prometheus",
+    "uid": "${DS}"
+   },
+   "gridPos": {
+    "x": 4,
+    "y": 0,
+    "w": 4,
+    "h": 4
+   },
+   "fieldConfig": {
+    "defaults": {
+     "unit": "none",
+     "mappings": [
+      {
+       "type": "value",
+       "options": {
+        "0": {
+         "text": "NONE",
+         "color": "#d03b3b",
+         "index": 0
+        },
+        "1": {
+         "text": "ELECTED",
+         "color": "#0ca30c",
+         "index": 1
+        }
+       }
+      }
+     ],
+     "thresholds": {
+      "mode": "absolute",
+      "steps": [
+       {
+        "color": "text",
+        "value": null
+       }
+      ]
+     },
+     "color": {
+      "mode": "thresholds"
+     }
+    },
+    "overrides": []
+   },
+   "options": {
+    "reduceOptions": {
+     "calcs": [
+      "lastNotNull"
+     ],
+     "fields": "",
+     "values": false
+    },
+    "orientation": "auto",
+    "textMode": "auto",
+    "colorMode": "value",
+    "graphMode": "none",
+    "justifyMode": "auto",
+    "wideLayout": true
+   },
+   "targets": [
+    {
+     "datasource": {
+      "type": "prometheus",
+      "uid": "${DS}"
+     },
+     "editorMode": "code",
+     "expr": "max(gpuguard_is_leader) OR on() vector(0)",
+     "refId": "A",
+     "range": false,
+     "instant": true,
+     "format": "time_series"
+    }
+   ]
+  },
+  {
+   "id": 3,
+   "type": "stat",
+   "title": "Mode",
+   "description": "OBSERVE writes nothing to any Node - it only records what it would have done. ENFORCE lets it cordon. Amber for ENFORCE is not a warning that something is wrong; it marks the state in which this component can remove serving capacity, which on this cluster is two nodes.",
+   "datasource": {
+    "type": "prometheus",
+    "uid": "${DS}"
+   },
+   "gridPos": {
+    "x": 8,
+    "y": 0,
+    "w": 4,
+    "h": 4
+   },
+   "fieldConfig": {
+    "defaults": {
+     "unit": "none",
+     "mappings": [
+      {
+       "type": "value",
+       "options": {
+        "0": {
+         "text": "OBSERVE",
+         "color": "#3987e5",
+         "index": 0
+        },
+        "1": {
+         "text": "ENFORCE",
+         "color": "#fab219",
+         "index": 1
+        }
+       }
+      }
+     ],
+     "thresholds": {
+      "mode": "absolute",
+      "steps": [
+       {
+        "color": "text",
+        "value": null
+       }
+      ]
+     },
+     "color": {
+      "mode": "thresholds"
+     }
+    },
+    "overrides": []
+   },
+   "options": {
+    "reduceOptions": {
+     "calcs": [
+      "lastNotNull"
+     ],
+     "fields": "",
+     "values": false
+    },
+    "orientation": "auto",
+    "textMode": "auto",
+    "colorMode": "value",
+    "graphMode": "none",
+    "justifyMode": "auto",
+    "wideLayout": true
+   },
+   "targets": [
+    {
+     "datasource": {
+      "type": "prometheus",
+      "uid": "${DS}"
+     },
+     "editorMode": "code",
+     "expr": "max(gpuguard_enforce_mode) OR on() vector(0)",
+     "refId": "A",
+     "range": false,
+     "instant": true,
+     "format": "time_series"
+    }
+   ]
+  },
+  {
+   "id": 4,
+   "type": "stat",
+   "title": "Nodes watched",
+   "description": "Nodes carrying gpu-health.amd.io/agent=true. Compare with 'Nodes enrolled' on the GPU Node Health board: a node with an agent but no guard coverage, or the reverse, is a gap that reads as healthy everywhere else.",
+   "datasource": {
+    "type": "prometheus",
+    "uid": "${DS}"
+   },
+   "gridPos": {
+    "x": 12,
+    "y": 0,
+    "w": 4,
+    "h": 4
+   },
+   "fieldConfig": {
+    "defaults": {
+     "unit": "none",
+     "mappings": [],
+     "thresholds": {
+      "mode": "absolute",
+      "steps": [
+       {
+        "color": "#3987e5",
+        "value": null
+       }
+      ]
+     },
+     "color": {
+      "mode": "thresholds"
+     }
+    },
+    "overrides": []
+   },
+   "options": {
+    "reduceOptions": {
+     "calcs": [
+      "lastNotNull"
+     ],
+     "fields": "",
+     "values": false
+    },
+    "orientation": "auto",
+    "textMode": "auto",
+    "colorMode": "value",
+    "graphMode": "none",
+    "justifyMode": "auto",
+    "wideLayout": true
+   },
+   "targets": [
+    {
+     "datasource": {
+      "type": "prometheus",
+      "uid": "${DS}"
+     },
+     "editorMode": "code",
+     "expr": "max(gpuguard_nodes_watched) OR on() vector(0)",
+     "refId": "A",
+     "range": false,
+     "instant": true,
+     "format": "time_series"
+    }
+   ]
+  },
+  {
+   "id": 5,
+   "type": "stat",
+   "title": "Would have cordoned (24h)",
+   "description": "The whole point of observe mode. Each count is a node the guard judged removable and did not remove only because GUARD_MODE=observe. This is the evidence for or against turning on enforce: a week of zeroes is the case for it, and any surprise here is the case against.",
+   "datasource": {
+    "type": "prometheus",
+    "uid": "${DS}"
+   },
+   "gridPos": {
+    "x": 16,
+    "y": 0,
+    "w": 4,
+    "h": 4
+   },
+   "fieldConfig": {
+    "defaults": {
+     "unit": "none",
+     "mappings": [],
+     "thresholds": {
+      "mode": "absolute",
+      "steps": [
+       {
+        "color": "#0ca30c",
+        "value": null
+       },
+       {
+        "color": "#fab219",
+        "value": 1
+       }
+      ]
+     },
+     "color": {
+      "mode": "thresholds"
+     }
+    },
+    "overrides": []
+   },
+   "options": {
+    "reduceOptions": {
+     "calcs": [
+      "lastNotNull"
+     ],
+     "fields": "",
+     "values": false
+    },
+    "orientation": "auto",
+    "textMode": "auto",
+    "colorMode": "value",
+    "graphMode": "none",
+    "justifyMode": "auto",
+    "wideLayout": true
+   },
+   "targets": [
+    {
+     "datasource": {
+      "type": "prometheus",
+      "uid": "${DS}"
+     },
+     "editorMode": "code",
+     "expr": "sum(max_over_time(gpuguard_decision{reason=\"observe-mode\"}[24h])) OR on() vector(0)",
+     "refId": "A",
+     "range": false,
+     "instant": true,
+     "format": "time_series"
+    }
+   ]
+  },
+  {
+   "id": 6,
+   "type": "stat",
+   "title": "Refused by a guardrail (24h)",
+   "description": "Nodes the guard wanted to cordon and was forbidden to - by the capacity floor, the rate limit, or stale health data. Unlike the panel to the left, this stays meaningful in enforce mode, and it means a human has to act: the guard has found something it is not allowed to fix.",
+   "datasource": {
+    "type": "prometheus",
+    "uid": "${DS}"
+   },
+   "gridPos": {
+    "x": 20,
+    "y": 0,
+    "w": 4,
+    "h": 4
+   },
+   "fieldConfig": {
+    "defaults": {
+     "unit": "none",
+     "mappings": [],
+     "thresholds": {
+      "mode": "absolute",
+      "steps": [
+       {
+        "color": "#0ca30c",
+        "value": null
+       },
+       {
+        "color": "#d03b3b",
+        "value": 1
+       }
+      ]
+     },
+     "color": {
+      "mode": "thresholds"
+     }
+    },
+    "overrides": []
+   },
+   "options": {
+    "reduceOptions": {
+     "calcs": [
+      "lastNotNull"
+     ],
+     "fields": "",
+     "values": false
+    },
+    "orientation": "auto",
+    "textMode": "auto",
+    "colorMode": "value",
+    "graphMode": "none",
+    "justifyMode": "auto",
+    "wideLayout": true
+   },
+   "targets": [
+    {
+     "datasource": {
+      "type": "prometheus",
+      "uid": "${DS}"
+     },
+     "editorMode": "code",
+     "expr": "sum(max_over_time(gpuguard_decision{reason=~\"capacity-floor|rate-limit|health-data-stale\"}[24h])) OR on() vector(0)",
+     "refId": "A",
+     "range": false,
+     "instant": true,
+     "format": "time_series"
+    }
+   ]
+  },
+  {
+   "id": 7,
+   "type": "timeseries",
+   "title": "Healthy capacity vs the floor",
+   "description": "The guard refuses to cordon whenever doing so would leave fewer healthy nodes than the floor. The floor is measured on what would REMAIN after the cordon, not before it. When these two lines meet, the guard is effectively disarmed - correctly, but it means an unhealthy node will now stay in service until a human intervenes.",
+   "datasource": {
+    "type": "prometheus",
+    "uid": "${DS}"
+   },
+   "gridPos": {
+    "x": 0,
+    "y": 4,
+    "w": 12,
+    "h": 8
+   },
+   "fieldConfig": {
+    "defaults": {
+     "unit": "none",
+     "custom": {
+      "drawStyle": "line",
+      "lineInterpolation": "linear",
+      "lineWidth": 2,
+      "fillOpacity": 10,
+      "gradientMode": "none",
+      "showPoints": "auto",
+      "pointSize": 8,
+      "spanNulls": false,
+      "barAlignment": 0,
+      "axisBorderShow": false,
+      "axisGridShow": true,
+      "scaleDistribution": {
+       "type": "linear"
+      },
+      "stacking": {
+       "mode": "none",
+       "group": "A"
+      },
+      "thresholdsStyle": {
+       "mode": "off"
+      }
+     },
+     "color": {
+      "mode": "palette-classic"
+     },
+     "thresholds": {
+      "mode": "absolute",
+      "steps": [
+       {
+        "color": "text",
+        "value": null
+       }
+      ]
+     },
+     "min": 0
+    },
+    "overrides": [
+     {
+      "matcher": {
+       "id": "byRegexp",
+       "options": "healthy capacity"
+      },
+      "properties": [
+       {
+        "id": "color",
+        "value": {
+         "mode": "fixed",
+         "fixedColor": "#199e70"
+        }
+       }
+      ]
+     },
+     {
+      "matcher": {
+       "id": "byRegexp",
+       "options": "floor.*"
+      },
+      "properties": [
+       {
+        "id": "color",
+        "value": {
+         "mode": "fixed",
+         "fixedColor": "#d03b3b"
+        }
+       }
+      ]
+     }
+    ]
+   },
+   "options": {
+    "legend": {
+     "displayMode": "list",
+     "placement": "bottom",
+     "showLegend": true,
+     "calcs": []
+    },
+    "tooltip": {
+     "mode": "multi",
+     "sort": "desc"
+    }
+   },
+   "targets": [
+    {
+     "datasource": {
+      "type": "prometheus",
+      "uid": "${DS}"
+     },
+     "editorMode": "code",
+     "expr": "max(gpuguard_healthy_capacity)",
+     "refId": "A",
+     "range": true,
+     "instant": false,
+     "format": "time_series",
+     "legendFormat": "healthy capacity"
+    },
+    {
+     "datasource": {
+      "type": "prometheus",
+      "uid": "${DS}"
+     },
+     "editorMode": "code",
+     "expr": "max(gpuguard_min_healthy_nodes)",
+     "refId": "B",
+     "range": true,
+     "instant": false,
+     "format": "time_series",
+     "legendFormat": "floor - refuses below this"
+    }
+   ]
+  },
+  {
+   "id": 8,
+   "type": "table",
+   "title": "Current decisions, and why",
+   "description": "One row per watched node, straight from the last evaluation. The reason column is the one to read: 'report-only-level' means the signal was real but only L1, 'capacity-floor' and 'rate-limit' mean the guard wanted to act and was refused, 'observe-mode' means it would have acted.",
+   "datasource": {
+    "type": "prometheus",
+    "uid": "${DS}"
+   },
+   "gridPos": {
+    "x": 12,
+    "y": 4,
+    "w": 12,
+    "h": 8
+   },
+   "fieldConfig": {
+    "defaults": {
+     "custom": {
+      "align": "auto",
+      "cellOptions": {
+       "type": "auto"
+      },
+      "inspect": false,
+      "filterable": true
+     },
+     "mappings": [],
+     "thresholds": {
+      "mode": "absolute",
+      "steps": [
+       {
+        "color": "text",
+        "value": null
+       }
+      ]
+     },
+     "color": {
+      "mode": "thresholds"
+     }
+    },
+    "overrides": []
+   },
+   "options": {
+    "showHeader": true,
+    "cellHeight": "sm",
+    "footer": {
+     "show": false,
+     "reducer": [
+      "sum"
+     ],
+     "countRows": false,
+     "fields": ""
+    },
+    "sortBy": []
+   },
+   "targets": [
+    {
+     "datasource": {
+      "type": "prometheus",
+      "uid": "${DS}"
+     },
+     "editorMode": "code",
+     "expr": "gpuguard_decision",
+     "refId": "A",
+     "range": false,
+     "instant": true,
+     "format": "time_series"
+    }
+   ],
+   "transformations": [
+    {
+     "id": "organize",
+     "options": {
+      "excludeByName": {
+       "Time": true,
+       "Value": true,
+       "__name__": true,
+       "job": true,
+       "instance": true,
+       "pod": true,
+       "cluster": true,
+       "container": true,
+       "endpoint": true,
+       "namespace": true,
+       "service": true
+      },
+      "indexByName": {
+       "node": 0,
+       "action": 1,
+       "reason": 2,
+       "level": 3,
+       "condition": 4
+      },
+      "renameByName": {
+       "node": "Node",
+       "action": "Action",
+       "reason": "Reason",
+       "level": "Level",
+       "condition": "Condition"
+      }
+     }
+    }
+   ]
+  },
+  {
+   "id": 9,
+   "type": "timeseries",
+   "title": "Nodes by decision reason",
+   "description": "Every watched node lands in exactly one bucket each cycle, so the stack totals to the node count. Green is the steady state; anything else is the guard having found something. A bucket that appears and then vanishes is the 15-minute activity window expiring, not the problem being fixed.",
+   "datasource": {
+    "type": "prometheus",
+    "uid": "${DS}"
+   },
+   "gridPos": {
+    "x": 0,
+    "y": 12,
+    "w": 12,
+    "h": 8
+   },
+   "fieldConfig": {
+    "defaults": {
+     "unit": "none",
+     "custom": {
+      "drawStyle": "bars",
+      "lineInterpolation": "linear",
+      "lineWidth": 2,
+      "fillOpacity": 70,
+      "gradientMode": "none",
+      "showPoints": "auto",
+      "pointSize": 8,
+      "spanNulls": false,
+      "barAlignment": 0,
+      "axisBorderShow": false,
+      "axisGridShow": true,
+      "scaleDistribution": {
+       "type": "linear"
+      },
+      "stacking": {
+       "mode": "normal",
+       "group": "A"
+      },
+      "thresholdsStyle": {
+       "mode": "off"
+      }
+     },
+     "color": {
+      "mode": "palette-classic"
+     },
+     "thresholds": {
+      "mode": "absolute",
+      "steps": [
+       {
+        "color": "text",
+        "value": null
+       }
+      ]
+     }
+    },
+    "overrides": [
+     {
+      "matcher": {
+       "id": "byRegexp",
+       "options": "healthy"
+      },
+      "properties": [
+       {
+        "id": "color",
+        "value": {
+         "mode": "fixed",
+         "fixedColor": "#0ca30c"
+        }
+       }
+      ]
+     },
+     {
+      "matcher": {
+       "id": "byRegexp",
+       "options": "report-only-level"
+      },
+      "properties": [
+       {
+        "id": "color",
+        "value": {
+         "mode": "fixed",
+         "fixedColor": "#3987e5"
+        }
+       }
+      ]
+     },
+     {
+      "matcher": {
+       "id": "byRegexp",
+       "options": "condition-too-young"
+      },
+      "properties": [
+       {
+        "id": "color",
+        "value": {
+         "mode": "fixed",
+         "fixedColor": "#199e70"
+        }
+       }
+      ]
+     },
+     {
+      "matcher": {
+       "id": "byRegexp",
+       "options": "observe-mode"
+      },
+      "properties": [
+       {
+        "id": "color",
+        "value": {
+         "mode": "fixed",
+         "fixedColor": "#fab219"
+        }
+       }
+      ]
+     },
+     {
+      "matcher": {
+       "id": "byRegexp",
+       "options": "already-cordoned"
+      },
+      "properties": [
+       {
+        "id": "color",
+        "value": {
+         "mode": "fixed",
+         "fixedColor": "#d95926"
+        }
+       }
+      ]
+     },
+     {
+      "matcher": {
+       "id": "byRegexp",
+       "options": "capacity-floor"
+      },
+      "properties": [
+       {
+        "id": "color",
+        "value": {
+         "mode": "fixed",
+         "fixedColor": "#d03b3b"
+        }
+       }
+      ]
+     },
+     {
+      "matcher": {
+       "id": "byRegexp",
+       "options": "rate-limit"
+      },
+      "properties": [
+       {
+        "id": "color",
+        "value": {
+         "mode": "fixed",
+         "fixedColor": "#d03b3b"
+        }
+       }
+      ]
+     },
+     {
+      "matcher": {
+       "id": "byRegexp",
+       "options": "health-data-stale"
+      },
+      "properties": [
+       {
+        "id": "color",
+        "value": {
+         "mode": "fixed",
+         "fixedColor": "#d03b3b"
+        }
+       }
+      ]
+     }
+    ]
+   },
+   "options": {
+    "legend": {
+     "displayMode": "list",
+     "placement": "bottom",
+     "showLegend": true,
+     "calcs": []
+    },
+    "tooltip": {
+     "mode": "multi",
+     "sort": "desc"
+    }
+   },
+   "targets": [
+    {
+     "datasource": {
+      "type": "prometheus",
+      "uid": "${DS}"
+     },
+     "editorMode": "code",
+     "expr": "sum by (reason) (gpuguard_decision)",
+     "refId": "A",
+     "range": true,
+     "instant": false,
+     "format": "time_series",
+     "legendFormat": "{{reason}}"
+    }
+   ]
+  },
+  {
+   "id": 10,
+   "type": "timeseries",
+   "title": "Metrics-exporter unreachable",
+   "description": "How long each exporter has failed to answer /metrics. Only a successful scrape resets this - never a restart, never a delete, never a Running phase. That matters here: the operator's DaemonSet has neither a readiness nor a liveness probe, so a dead exporter reads 1/1 Running indefinitely, and this counter is the only thing that tells it apart from a healthy one. Grouped by exporter_pod, not pod: `pod` on this series is the guard's own.",
+   "datasource": {
+    "type": "prometheus",
+    "uid": "${DS}"
+   },
+   "gridPos": {
+    "x": 12,
+    "y": 12,
+    "w": 12,
+    "h": 8
+   },
+   "fieldConfig": {
+    "defaults": {
+     "unit": "s",
+     "custom": {
+      "drawStyle": "line",
+      "lineInterpolation": "linear",
+      "lineWidth": 2,
+      "fillOpacity": 10,
+      "gradientMode": "none",
+      "showPoints": "auto",
+      "pointSize": 8,
+      "spanNulls": false,
+      "barAlignment": 0,
+      "axisBorderShow": false,
+      "axisGridShow": true,
+      "scaleDistribution": {
+       "type": "linear"
+      },
+      "stacking": {
+       "mode": "none",
+       "group": "A"
+      },
+      "thresholdsStyle": {
+       "mode": "dashed"
+      }
+     },
+     "color": {
+      "mode": "palette-classic"
+     },
+     "thresholds": {
+      "mode": "absolute",
+      "steps": [
+       {
+        "color": "text",
+        "value": null
+       },
+       {
+        "color": "#d03b3b",
+        "value": 900
+       }
+      ]
+     },
+     "min": 0
+    },
+    "overrides": []
+   },
+   "options": {
+    "legend": {
+     "displayMode": "list",
+     "placement": "bottom",
+     "showLegend": true,
+     "calcs": []
+    },
+    "tooltip": {
+     "mode": "multi",
+     "sort": "desc"
+    }
+   },
+   "targets": [
+    {
+     "datasource": {
+      "type": "prometheus",
+      "uid": "${DS}"
+     },
+     "editorMode": "code",
+     "expr": "max by (exporter_pod, node) (gpuguard_exporter_unreachable_seconds)",
+     "refId": "A",
+     "range": true,
+     "instant": false,
+     "format": "time_series",
+     "legendFormat": "{{node}} · {{exporter_pod}}"
+    }
+   ]
+  },
+  {
+   "id": 11,
+   "type": "timeseries",
+   "title": "Age of last evaluation",
+   "description": "Seconds since the guard last completed a loop. It evaluates every 30s, so a sustained climb means the loop is wedged or the API server is unreachable - the guard is up and blind, which reads as 'no problems found' on every other panel.",
+   "datasource": {
+    "type": "prometheus",
+    "uid": "${DS}"
+   },
+   "gridPos": {
+    "x": 0,
+    "y": 20,
+    "w": 8,
+    "h": 6
+   },
+   "fieldConfig": {
+    "defaults": {
+     "unit": "s",
+     "custom": {
+      "drawStyle": "line",
+      "lineInterpolation": "linear",
+      "lineWidth": 2,
+      "fillOpacity": 10,
+      "gradientMode": "none",
+      "showPoints": "auto",
+      "pointSize": 8,
+      "spanNulls": false,
+      "barAlignment": 0,
+      "axisBorderShow": false,
+      "axisGridShow": true,
+      "scaleDistribution": {
+       "type": "linear"
+      },
+      "stacking": {
+       "mode": "none",
+       "group": "A"
+      },
+      "thresholdsStyle": {
+       "mode": "dashed"
+      }
+     },
+     "color": {
+      "mode": "palette-classic"
+     },
+     "thresholds": {
+      "mode": "absolute",
+      "steps": [
+       {
+        "color": "text",
+        "value": null
+       },
+       {
+        "color": "#d03b3b",
+        "value": 300
+       }
+      ]
+     },
+     "min": 0
+    },
+    "overrides": []
+   },
+   "options": {
+    "legend": {
+     "displayMode": "list",
+     "placement": "bottom",
+     "showLegend": true,
+     "calcs": []
+    },
+    "tooltip": {
+     "mode": "multi",
+     "sort": "desc"
+    }
+   },
+   "targets": [
+    {
+     "datasource": {
+      "type": "prometheus",
+      "uid": "${DS}"
+     },
+     "editorMode": "code",
+     "expr": "time() - max(gpuguard_last_loop_timestamp_seconds)",
+     "refId": "A",
+     "range": true,
+     "instant": false,
+     "format": "time_series",
+     "legendFormat": "evaluation age"
+    }
+   ]
+  },
+  {
+   "id": 12,
+   "type": "timeseries",
+   "title": "Cordons performed",
+   "description": "Nodes actually cordoned by the guard. Expected to be flat at zero for as long as the mode above reads OBSERVE - a non-zero value while in observe mode would mean the mode is not being honoured, which is a bug, not an incident. Note the guard never uncordons: recovery goes through a human and a smoke test.",
+   "datasource": {
+    "type": "prometheus",
+    "uid": "${DS}"
+   },
+   "gridPos": {
+    "x": 8,
+    "y": 20,
+    "w": 8,
+    "h": 6
+   },
+   "fieldConfig": {
+    "defaults": {
+     "unit": "none",
+     "custom": {
+      "drawStyle": "bars",
+      "lineInterpolation": "linear",
+      "lineWidth": 2,
+      "fillOpacity": 70,
+      "gradientMode": "none",
+      "showPoints": "auto",
+      "pointSize": 8,
+      "spanNulls": false,
+      "barAlignment": 0,
+      "axisBorderShow": false,
+      "axisGridShow": true,
+      "scaleDistribution": {
+       "type": "linear"
+      },
+      "stacking": {
+       "mode": "none",
+       "group": "A"
+      },
+      "thresholdsStyle": {
+       "mode": "off"
+      }
+     },
+     "color": {
+      "mode": "palette-classic"
+     },
+     "thresholds": {
+      "mode": "absolute",
+      "steps": [
+       {
+        "color": "text",
+        "value": null
+       }
+      ]
+     },
+     "min": 0
+    },
+    "overrides": [
+     {
+      "matcher": {
+       "id": "byRegexp",
+       "options": "cordons.*"
+      },
+      "properties": [
+       {
+        "id": "color",
+        "value": {
+         "mode": "fixed",
+         "fixedColor": "#d95926"
+        }
+       }
+      ]
+     }
+    ]
+   },
+   "options": {
+    "legend": {
+     "displayMode": "list",
+     "placement": "bottom",
+     "showLegend": true,
+     "calcs": []
+    },
+    "tooltip": {
+     "mode": "multi",
+     "sort": "desc"
+    }
+   },
+   "targets": [
+    {
+     "datasource": {
+      "type": "prometheus",
+      "uid": "${DS}"
+     },
+     "editorMode": "code",
+     "expr": "sum(increase(gpuguard_cordons_total[1h])) OR on() vector(0)",
+     "refId": "A",
+     "range": true,
+     "instant": false,
+     "format": "time_series",
+     "legendFormat": "cordons (1h)"
+    }
+   ]
+  },
+  {
+   "id": 13,
+   "type": "timeseries",
+   "title": "Guard errors",
+   "description": "Loop errors mean a bug survived into the evaluation loop, which catches everything so one bad node cannot stop the rest. Event errors mean the guard cannot write Kubernetes Events - its actions and refusals are happening unwitnessed, which breaks the 'every removal alerts' guardrail.",
+   "datasource": {
+    "type": "prometheus",
+    "uid": "${DS}"
+   },
+   "gridPos": {
+    "x": 16,
+    "y": 20,
+    "w": 8,
+    "h": 6
+   },
+   "fieldConfig": {
+    "defaults": {
+     "unit": "none",
+     "custom": {
+      "drawStyle": "bars",
+      "lineInterpolation": "linear",
+      "lineWidth": 2,
+      "fillOpacity": 70,
+      "gradientMode": "none",
+      "showPoints": "auto",
+      "pointSize": 8,
+      "spanNulls": false,
+      "barAlignment": 0,
+      "axisBorderShow": false,
+      "axisGridShow": true,
+      "scaleDistribution": {
+       "type": "linear"
+      },
+      "stacking": {
+       "mode": "none",
+       "group": "A"
+      },
+      "thresholdsStyle": {
+       "mode": "off"
+      }
+     },
+     "color": {
+      "mode": "palette-classic"
+     },
+     "thresholds": {
+      "mode": "absolute",
+      "steps": [
+       {
+        "color": "text",
+        "value": null
+       }
+      ]
+     },
+     "min": 0
+    },
+    "overrides": [
+     {
+      "matcher": {
+       "id": "byRegexp",
+       "options": "loop errors.*"
+      },
+      "properties": [
+       {
+        "id": "color",
+        "value": {
+         "mode": "fixed",
+         "fixedColor": "#d03b3b"
+        }
+       }
+      ]
+     },
+     {
+      "matcher": {
+       "id": "byRegexp",
+       "options": "event errors.*"
+      },
+      "properties": [
+       {
+        "id": "color",
+        "value": {
+         "mode": "fixed",
+         "fixedColor": "#fab219"
+        }
+       }
+      ]
+     }
+    ]
+   },
+   "options": {
+    "legend": {
+     "displayMode": "list",
+     "placement": "bottom",
+     "showLegend": true,
+     "calcs": []
+    },
+    "tooltip": {
+     "mode": "multi",
+     "sort": "desc"
+    }
+   },
+   "targets": [
+    {
+     "datasource": {
+      "type": "prometheus",
+      "uid": "${DS}"
+     },
+     "editorMode": "code",
+     "expr": "sum(increase(gpuguard_loop_errors_total[1h])) OR on() vector(0)",
+     "refId": "A",
+     "range": true,
+     "instant": false,
+     "format": "time_series",
+     "legendFormat": "loop errors (1h)"
+    },
+    {
+     "datasource": {
+      "type": "prometheus",
+      "uid": "${DS}"
+     },
+     "editorMode": "code",
+     "expr": "sum(increase(gpuguard_event_errors_total[1h])) OR on() vector(0)",
+     "refId": "B",
+     "range": true,
+     "instant": false,
+     "format": "time_series",
+     "legendFormat": "event errors (1h)"
+    }
+   ]
+  },
+  {
+   "id": 14,
+   "type": "table",
+   "title": "Exporter supervision",
+   "description": "What the guard would do about each metrics-exporter pod. Acts only when GUARD_EXPORTER_SUPERVISION is enabled; otherwise every unreachable pod sits at reason='supervision-disabled' and this panel is pure observation. 'within-grace' is the normal state for a recently-restarted guard, because the unreachable clock lives in memory and a restart resets it.",
+   "datasource": {
+    "type": "prometheus",
+    "uid": "${DS}"
+   },
+   "gridPos": {
+    "x": 0,
+    "y": 26,
+    "w": 24,
+    "h": 7
+   },
+   "fieldConfig": {
+    "defaults": {
+     "custom": {
+      "align": "auto",
+      "cellOptions": {
+       "type": "auto"
+      },
+      "inspect": false,
+      "filterable": true
+     },
+     "mappings": [],
+     "thresholds": {
+      "mode": "absolute",
+      "steps": [
+       {
+        "color": "text",
+        "value": null
+       }
+      ]
+     },
+     "color": {
+      "mode": "thresholds"
+     }
+    },
+    "overrides": []
+   },
+   "options": {
+    "showHeader": true,
+    "cellHeight": "sm",
+    "footer": {
+     "show": false,
+     "reducer": [
+      "sum"
+     ],
+     "countRows": false,
+     "fields": ""
+    },
+    "sortBy": []
+   },
+   "targets": [
+    {
+     "datasource": {
+      "type": "prometheus",
+      "uid": "${DS}"
+     },
+     "editorMode": "code",
+     "expr": "gpuguard_exporter_decision",
+     "refId": "A",
+     "range": false,
+     "instant": true,
+     "format": "time_series"
+    }
+   ],
+   "transformations": [
+    {
+     "id": "organize",
+     "options": {
+      "excludeByName": {
+       "Time": true,
+       "Value": true,
+       "__name__": true,
+       "job": true,
+       "instance": true,
+       "pod": true,
+       "cluster": true,
+       "container": true,
+       "endpoint": true,
+       "namespace": true,
+       "service": true
+      },
+      "indexByName": {
+       "node": 0,
+       "exporter_pod": 1,
+       "action": 2,
+       "reason": 3
+      },
+      "renameByName": {
+       "node": "Node",
+       "exporter_pod": "Exporter pod",
+       "action": "Action",
+       "reason": "Reason"
+      }
+     }
+    }
+   ]
+  }
+ ]
+}

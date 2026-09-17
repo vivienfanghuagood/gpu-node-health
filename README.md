@@ -17,7 +17,7 @@ The guiding rule for everything here: **silence must never read as health.**
 |---|---|---|
 | `gpu-health-agent` | DaemonSet, one per GPU node | running on 0024/0029/0043 in observer mode |
 | telemetry stack | vmagent / vmalert / Alertmanager / KSM / node-exporter | deployed, see [deploy/telemetry](deploy/telemetry/) |
-| dashboards | Grafana, folder "GPU Health" | provisioned and serving at `:30091` |
+| dashboards | Grafana, folder "GPU Health" | three, provisioned and serving at `:30091` — node health, fleet, guard |
 | node tuning | DaemonSet, fleet-wide | applied — all 7 nodes 128 → 8192 inotify instances |
 | `gpu-node-guard` | Deployment, leader-elected | **deployed 2026-09-17, `observe` mode** on 0024 via the dev overlay — cannot go `enforce` until alerts have somewhere to go, see [guard/](guard/) |
 
@@ -161,6 +161,14 @@ Every scenario in `tests/test_conditions.py` is drawn from a real incident,
 `tests/test_signals.py` matches against verbatim log lines from the August
 hangs, and `tests/test_guard_policy.py` covers the decision that can remove a
 production node — mostly the cases where it correctly refuses to.
+
+`tests/test_alert_contract.py` is a different kind of test: it reads the
+shipped `alerts.yaml` and checks it against the strings the code actually
+emits. It exists because a rule shipped that matched `reason="would-cordon"`, a
+constant no code path produced. It parsed, it loaded, it evaluated without
+error, and it could never fire — and it was the most important rule while the
+guard runs in observe mode. Each layer was valid on its own; only the join
+between them was wrong, and nothing was testing the join.
 
 ## Validated on the cluster
 

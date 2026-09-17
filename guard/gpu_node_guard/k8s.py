@@ -128,6 +128,24 @@ class K8sClient:
 
     # -- events --------------------------------------------------------------
 
+    @staticmethod
+    def event_namespace(involved, fallback):
+        """Which namespace an Event about `involved` has to be created in.
+
+        Not a free choice. The API server validates that an Event's namespace
+        matches its involvedObject's, and a Node is cluster-scoped - its
+        involvedObject.namespace is "". The only namespace that satisfies the
+        check for a cluster-scoped object is `default`, which is also what
+        client-go's EventRecorder does.
+
+        Getting this wrong fails in the worst possible way: a 422 per event,
+        every event about a Node rejected, and the guard's entire written
+        record reduced to pod logs - while the process itself looks healthy.
+        Found on 2026-09-17 by injecting a fatal signal and looking for the
+        Event that should have followed.
+        """
+        return involved.get("namespace") or "default"
+
     def emit_event(self, namespace, involved, reason, message, etype="Warning",
                    now=None):
         """Record a core/v1 Event against `involved`.
@@ -137,11 +155,15 @@ class K8sClient:
         something a human needs to act on, and if that only ever appeared in a
         pod log it would be invisible exactly when it counted.
 
+        `namespace` is only a fallback - see event_namespace(). It is the
+        involved object that decides.
+
         Events are best-effort. A failure to record one must never stop the
         loop, so callers swallow K8sError here - but the failure itself is
         surfaced as a metric so "the guard cannot write Events" is visible.
         """
         now = time.time() if now is None else now
+        namespace = self.event_namespace(involved, namespace)
         stamp = rfc3339(now)
         # Name must be unique; the API server would reject a repeat.
         suffix = f"{int(now * 1e6) % 10**10:010d}"

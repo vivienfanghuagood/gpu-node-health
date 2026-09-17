@@ -296,3 +296,29 @@ def test_parse_time_accepts_microtime():
     assert parse_time("2026-09-17T10:00:00.123456Z") == 1789639200
     assert parse_time(rfc3339_micro(1789639200)) == 1789639200
     assert rfc3339_micro(1789639200).endswith(".000000Z")
+
+
+# -- Event namespace ---------------------------------------------------------
+#
+# These pin a rule the API server enforces and that nothing else in the code
+# would reveal: an Event's namespace must agree with its involvedObject's.
+# Getting it wrong returns 422 per event and silently reduces the guard's
+# written record to pod logs, which is the one failure mode that would break
+# "every removal alerts" while leaving the process looking healthy.
+
+from gpu_node_guard.k8s import K8sClient  # noqa: E402
+
+
+def test_node_events_go_to_default_because_nodes_are_cluster_scoped():
+    involved = {"kind": "Node", "name": "wx-ms-w7900d-0024"}
+    assert K8sClient.event_namespace(involved, "gpu-node-health") == "default"
+
+
+def test_an_empty_involved_namespace_is_treated_the_same_as_a_missing_one():
+    involved = {"kind": "Node", "name": "n", "namespace": ""}
+    assert K8sClient.event_namespace(involved, "gpu-node-health") == "default"
+
+
+def test_namespaced_objects_keep_their_own_namespace():
+    involved = {"kind": "Pod", "name": "exporter-x", "namespace": "kube-amd-gpu"}
+    assert K8sClient.event_namespace(involved, "gpu-node-health") == "kube-amd-gpu"

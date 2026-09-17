@@ -300,7 +300,10 @@ groups:
           summary: "{{ $labels.node }}: a cordon condition is active but the agent says its own data is stale"
 
       - alert: GPUGuardWouldHaveCordoned
-        expr: max by (node, condition) (gpuguard_decision{reason="would-cordon"}) > 0
+        # reason="observe-mode" is what policy.decide actually emits. This rule
+        # previously matched "would-cordon", a constant no code path ever
+        # produced, so it could never fire - see the note in policy.py.
+        expr: max by (node, condition) (gpuguard_decision{reason="observe-mode"}) > 0
         for: 5m
         labels:
           severity: warning
