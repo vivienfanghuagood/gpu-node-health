@@ -157,6 +157,29 @@ within one collection interval. Removing the label is the rollback.
 **Deferred.** 0004/0005/0006 are not to be touched for now — too much else
 depends on them. That includes the labelling above and any reboot.
 
+But the question got answered anyway, for free, by an experiment already in
+flight: the three dead exporter pods were deleted at `2026-09-17T03:40:36Z`
+with `deletionGracePeriodSeconds: 1`. Two and a half hours later all three were
+still `Terminating`:
+
+```
+default-metrics-exporter-wj6pd  1/1  Terminating  wx-ms-w7900d-0004
+default-metrics-exporter-nxt4l  1/1  Terminating  wx-ms-w7900d-0005
+default-metrics-exporter-swrmm  1/1  Terminating  wx-ms-w7900d-0006
+```
+
+A one-second grace period that has not expired in 8,700 seconds is not a slow
+shutdown. The kubelet cannot tear the sandbox down because a task inside it is
+in `D`, and a task in `D` cannot be signalled. 0004 is measured; 0005 and 0006
+now show the *same terminal behaviour under the same stimulus*, which is as
+close to measurement as it gets without logging in. Their driver state should
+be read as confirmed-by-behaviour rather than inferred.
+
+Note what this also means: **the DaemonSet will not replace them.** A pod that
+never finishes terminating never frees its slot, so those three nodes have no
+exporter and will have none until they reboot. `up{job="amd-gpu-exporter"}`
+stays at 2/5.
+
 ### The same chain, on two other nodes
 
 0004 is not a one-off. Sweeping the retained kernel logs (`kern.log*`
