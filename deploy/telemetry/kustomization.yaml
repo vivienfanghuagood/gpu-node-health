@@ -7,6 +7,10 @@ kind: Kustomization
 resources:
   - vmagent-rbac.yaml
   - vmagent-deployment.yaml
+  - kube-state-metrics.yaml
+  - node-exporter.yaml
+  - vmalert-deployment.yaml
+  - alertmanager-deployment.yaml
 
 # Hash-suffixed, so editing scrape.yaml produces a new ConfigMap name and
 # rolls the Deployment. vmagent does not watch its config file, and a config
@@ -17,3 +21,11 @@ configMapGenerator:
     namespace: amd-telemetry
     files:
       - scrape.yaml
+  - name: gpu-alert-rules
+    namespace: amd-telemetry
+    files:
+      - alerts.yaml
+  - name: alertmanager-config
+    namespace: amd-telemetry
+    files:
+      - alertmanager.yml

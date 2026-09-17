@@ -1,0 +1,104 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: vmalert
+  namespace: amd-telemetry
+  labels:
+    app: vmalert
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: vmalert
+  strategy:
+    type: Recreate
+  template:
+    metadata:
+      labels:
+        app: vmalert
+    spec:
+      # Same broken-clusterDNS workaround as vmagent; see the comment there.
+      dnsPolicy: None
+      dnsConfig:
+        nameservers: ["10.233.0.10"]
+        searches:
+          - amd-telemetry.svc.amd.gpu.dc
+          - svc.amd.gpu.dc
+          - amd.gpu.dc
+        options:
+          - name: ndots
+            value: "5"
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+        runAsGroup: 1000
+      containers:
+        - name: vmalert
+          image: 10.5.10.12:1808/radeon-cloud-global/vmalert:v1.106.1@sha256:eab73bbf66b440d38ea2ad05c09703f5722e95892bfa782ed8521eec9c774761
+          imagePullPolicy: IfNotPresent
+          args:
+            - -rule=/rules/alerts.yaml
+            - -datasource.url=http://victoria-metrics.amd-telemetry.svc.amd.gpu.dc:8428
+            # Recording-rule output and ALERTS series go back into the same
+            # store, so an alert's own history is queryable after the fact -
+            # which is what post-incident review needs and what was missing
+            # for the August hangs.
+            - -remoteWrite.url=http://victoria-metrics.amd-telemetry.svc.amd.gpu.dc:8428
+            - -remoteRead.url=http://victoria-metrics.amd-telemetry.svc.amd.gpu.dc:8428
+            - -notifier.url=http://alertmanager.amd-telemetry.svc.amd.gpu.dc:9093
+            - -evaluationInterval=30s
+            - -httpListenAddr=:8880
+            # VictoriaMetrics is a single node on a hostPath and takes a few
+            # seconds to answer after a restart; without this vmalert would
+            # come up, fail every rule once, and report false all-clears.
+            - -datasource.queryStep=60s
+          ports:
+            - name: http
+              containerPort: 8880
+          resources:
+            requests:
+              cpu: 20m
+              memory: 64Mi
+            limits:
+              memory: 256Mi
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: http
+            initialDelaySeconds: 15
+            periodSeconds: 20
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: http
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          volumeMounts:
+            - name: rules
+              mountPath: /rules
+              readOnly: true
+      volumes:
+        - name: rules
+          configMap:
+            name: gpu-alert-rules
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: vmalert
+  namespace: amd-telemetry
+  labels:
+    app: vmalert
+spec:
+  type: ClusterIP
+  selector:
+    app: vmalert
+  ports:
+    - name: http
+      port: 8880
+      targetPort: http

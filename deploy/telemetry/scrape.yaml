@@ -61,6 +61,36 @@ scrape_configs:
       # with the exporter's own pod identity would destroy that.
 
   # ---------------------------------------------------------------
+  - job_name: kube-state-metrics
+    kubernetes_sd_configs:
+      - role: pod
+        namespaces:
+          names: [amd-telemetry]
+    relabel_configs:
+      - source_labels: [__meta_kubernetes_pod_label_app]
+        regex: kube-state-metrics
+        action: keep
+      - source_labels: [__meta_kubernetes_pod_container_port_name]
+        regex: http
+        action: keep
+
+  # ---------------------------------------------------------------
+  - job_name: node-exporter
+    kubernetes_sd_configs:
+      - role: pod
+        namespaces:
+          names: [amd-telemetry]
+    relabel_configs:
+      - source_labels: [__meta_kubernetes_pod_label_app]
+        regex: node-exporter
+        action: keep
+      - source_labels: [__meta_kubernetes_pod_container_port_name]
+        regex: metrics
+        action: keep
+      - source_labels: [__meta_kubernetes_pod_node_name]
+        target_label: node
+
+  # ---------------------------------------------------------------
   - job_name: vmagent
     # Self-scrape. If collection breaks, the absence of these series is
     # what tells us - silence must never read as health.

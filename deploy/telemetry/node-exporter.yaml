@@ -1,0 +1,89 @@
+apiVersion: apps/v1
+kind: DaemonSet
+metadata:
+  name: node-exporter
+  namespace: amd-telemetry
+  labels:
+    app: node-exporter
+spec:
+  selector:
+    matchLabels:
+      app: node-exporter
+  updateStrategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxUnavailable: 1
+  template:
+    metadata:
+      labels:
+        app: node-exporter
+    spec:
+      # Same per-node opt-in label as the health agent, NOT a blanket rollout.
+      # 0004/0005/0006 are control-plane nodes carrying services that must stay
+      # up; adding a DaemonSet to them is a decision for their owner, not a
+      # side effect of enabling telemetry. Label a node to enrol it.
+      nodeSelector:
+        gpu-health.amd.io/agent: "true"
+      tolerations:
+        - operator: Exists
+      hostNetwork: true
+      hostPID: true
+      # hostNetwork means this port is bound on the node itself. 9100 is the
+      # node-exporter convention and nothing else on these nodes uses it.
+      dnsPolicy: ClusterFirstWithHostNet
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65534
+        runAsGroup: 65534
+      containers:
+        - name: node-exporter
+          image: 10.5.10.12:1808/radeon-cloud-global/node-exporter:v1.8.2@sha256:8dc3a610752824b6ced436ec3c5ce11a5fdeb4fba11cadc99c1ee9d32d0a79e9
+          imagePullPolicy: IfNotPresent
+          args:
+            - --path.procfs=/host/proc
+            - --path.sysfs=/host/sys
+            - --path.rootfs=/host/root
+            - --web.listen-address=:9100
+            # The default collector set includes several that walk every mount
+            # and every network device; on nodes that are already wedged, that
+            # is exactly the wrong thing for a monitoring agent to do.
+            - --collector.filesystem.mount-points-exclude=^/(dev|proc|sys|var/lib/docker/.+|var/lib/kubelet/.+)($|/)
+            - --no-collector.wifi
+            - --no-collector.hwmon
+          ports:
+            - name: metrics
+              containerPort: 9100
+          resources:
+            requests:
+              cpu: 20m
+              memory: 32Mi
+            limits:
+              # No CPU limit, same reasoning as the health agent: a throttled
+              # collector goes quiet during the load spike you deployed it for.
+              memory: 128Mi
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+          volumeMounts:
+            - name: proc
+              mountPath: /host/proc
+              readOnly: true
+            - name: sys
+              mountPath: /host/sys
+              readOnly: true
+            - name: root
+              mountPath: /host/root
+              readOnly: true
+              mountPropagation: HostToContainer
+      volumes:
+        - name: proc
+          hostPath:
+            path: /proc
+        - name: sys
+          hostPath:
+            path: /sys
+        - name: root
+          hostPath:
+            path: /

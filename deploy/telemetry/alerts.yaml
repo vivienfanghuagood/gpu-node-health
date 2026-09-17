@@ -1,0 +1,240 @@
+# Alert rules for the GPU hang failure mode.
+#
+# Every rule here is derived from an observed incident on this cluster, not
+# from a generic GPU dashboard. The August 2026 hangs were expensive because
+# nothing noticed, so the bias throughout is: a signal that stops arriving is
+# an alert, not an all-clear.
+#
+# Severity means: critical = a node is losing or has lost GPUs and tenants are
+# affected or about to be; warning = something is degrading and wants a human
+# before the next shift, not during the night.
+
+groups:
+  # ------------------------------------------------------------------
+  - name: gpu-node-health.conditions
+    interval: 30s
+    rules:
+      - alert: GPUUnrecoverable
+        expr: gpuhealth_condition{condition="GPUUnrecoverable"} == 1
+        # No `for`. This fires on MES-unrecoverable / GPU reset / VRAM loss,
+        # which do not resolve on their own. Waiting out a debounce window
+        # only buys more tenants scheduled onto a dead node.
+        labels:
+          severity: critical
+        annotations:
+          summary: "{{ $labels.node }}: GPU in unrecoverable state"
+          description: >-
+            The kernel log on {{ $labels.node }} carries MES-unrecoverable,
+            GPU-reset or VRAM-loss lines within the last 15 minutes. On this
+            cluster that has always required a full node reboot. Cordon the
+            node; check gpu_health for which tenants are on it.
+
+      - alert: GPUWorkqueueStalled
+        expr: gpuhealth_condition{condition="GPUWorkqueueStalled"} == 1
+        labels:
+          severity: critical
+        annotations:
+          summary: "{{ $labels.node }}: TTM workqueue stalled"
+          description: >-
+            kworker/u26* blocked in uninterruptible sleep, or hung-task lines
+            in the kernel log. This is the ONLY early signal of the silent
+            variant of this failure - the node can look entirely healthy from
+            the outside while every GPU scheduling context freezes in turn.
+
+      - alert: GPUEngineTimeout
+        expr: gpuhealth_condition{condition="GPUEngineTimeout"} == 1
+        for: 10m
+        # Unlike the two above, an isolated ring timeout is survivable and
+        # fairly common. What matters is recurrence, which the condition's own
+        # 15-minute window plus this 10-minute `for` together express.
+        labels:
+          severity: warning
+        annotations:
+          summary: "{{ $labels.node }}: recurring GPU engine timeouts"
+          description: >-
+            ring timeout / job timedout recurring on {{ $labels.node }}.
+            Precedes the unrecoverable state often enough to be worth a look
+            before it escalates.
+
+      - alert: GPUProbeFailed
+        # Scoped to nodes that actually have an exporter target. Nodes without
+        # one - the stress box, anything missing the amd-gpu feature label -
+        # report the probe as failed quite correctly, and paging about it
+        # would train people to ignore this rule.
+        expr: >-
+          gpuhealth_condition{condition="GPUProbeFailed"} == 1
+          and on(node) (count by (node) (up{job="amd-gpu-exporter"}) > 0)
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "{{ $labels.node }}: GPU probe failing"
+
+  # ------------------------------------------------------------------
+  - name: gpu-node-health.chain
+    interval: 30s
+    rules:
+      # This group is the point of the whole project. The failure that cost
+      # the most was not a GPU dying - it was the health chain being dead and
+      # no one knowing. So the chain watches itself.
+
+      - alert: GPUHealthDataStale
+        expr: gpuhealth_condition{condition="GPUHealthDataStale"} == 1
+        labels:
+          severity: critical
+        annotations:
+          summary: "{{ $labels.node }}: health agent cannot read its own inputs"
+          description: >-
+            The agent is running but cannot read /proc or the kernel log, so
+            its all-clear means nothing. Treat this node as UNKNOWN, not
+            healthy.
+
+      - alert: GPUHealthAgentDown
+        expr: up{job="gpu-health-agent"} == 0
+        for: 5m
+        labels:
+          severity: critical
+        annotations:
+          summary: "{{ $labels.instance }}: health agent not scrapeable"
+
+      - alert: GPUHealthAgentMissing
+        # up{} disappears entirely if the pod is deleted rather than broken -
+        # there is no target left to report 0. Absence of the whole job is the
+        # failure this catches, and it is the one that looks most like health.
+        expr: absent(up{job="gpu-health-agent"} == 1)
+        for: 10m
+        labels:
+          severity: critical
+        annotations:
+          summary: "No gpu-health-agent is reporting anywhere in the cluster"
+
+      - alert: GPUHealthAgentMissingOnNode
+        # The per-node version, and the reason kube-state-metrics is in this
+        # stack at all. A node carrying the enrolment label with no agent
+        # series is a node that silently stopped being monitored - which reads
+        # from every dashboard as a node with no problems.
+        expr: >-
+          (max by (node) (kube_node_labels{label_gpu_health_amd_io_agent="true"}) == 1)
+          unless (max by (node) (gpuhealth_agent_up) == 1)
+        for: 10m
+        labels:
+          severity: critical
+        annotations:
+          summary: "{{ $labels.node }}: enrolled for health monitoring but no agent is reporting"
+
+      - alert: GPUNodeConditionFromAPIServer
+        # Read off the Node object via kube-state-metrics, not off the agent.
+        # An independent path to the same truth: if the agent's own /metrics
+        # were lying or unscrapeable, this still fires.
+        expr: >-
+          kube_node_status_condition{
+            condition=~"GPUUnrecoverable|GPUWorkqueueStalled|GPUHealthDataStale",
+            status="true"} == 1
+        labels:
+          severity: critical
+        annotations:
+          summary: "{{ $labels.node }}: API server reports {{ $labels.condition }}"
+
+      - alert: GPUHealthCollectStale
+        expr: time() - gpuhealth_collect_timestamp_seconds > 120
+        for: 5m
+        labels:
+          severity: critical
+        annotations:
+          summary: "{{ $labels.node }}: agent scrapeable but not collecting"
+          description: >-
+            The agent answers /metrics but its last successful collection is
+            over two minutes old, so it is serving a cached all-clear.
+
+      - alert: AMDMetricsExporterDown
+        expr: up{job="amd-gpu-exporter"} == 0
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: "{{ $labels.node }}: AMD metrics exporter not answering"
+          description: >-
+            The operator's exporter DaemonSet has no readiness or liveness
+            probe, so a pod that has stopped listening still shows 1/1 Running
+            and stays a Ready endpoint of default-metrics-exporter. Three of
+            five were in exactly that state when this rule was written. This
+            alert is the only thing that distinguishes it from healthy.
+
+      - alert: AMDExporterUnreachableFromNode
+        # Same scoping as GPUProbeFailed: only nodes that are supposed to have
+        # an exporter.
+        expr: >-
+          gpuhealth_exporter_reachable == 0
+          and on(node) (count by (node) (up{job="amd-gpu-exporter"}) > 0)
+        for: 15m
+        labels:
+          severity: warning
+        annotations:
+          summary: "{{ $labels.node }}: node cannot reach its own GPU exporter"
+
+  # ------------------------------------------------------------------
+  - name: gpu-node-health.kernel
+    interval: 30s
+    rules:
+      - alert: GPUFatalKernelEvent
+        expr: increase(gpuhealth_kernlog_events_total{severity="fatal"}[15m]) > 0
+        labels:
+          severity: critical
+        annotations:
+          summary: "{{ $labels.node }}: fatal GPU kernel event ({{ $labels.rule }})"
+          description: >-
+            Raised straight off the kernel log counters rather than off a Node
+            Condition, so it still fires if condition publishing is disabled
+            or broken. Two independent paths to the same alert is deliberate.
+
+      - alert: GPUWarningKernelEventBurst
+        expr: increase(gpuhealth_kernlog_events_total{severity="warning"}[15m]) > 3
+        labels:
+          severity: warning
+        annotations:
+          summary: "{{ $labels.node }}: burst of GPU kernel warnings ({{ $labels.rule }})"
+
+  # ------------------------------------------------------------------
+  - name: gpu-node-health.tenants
+    interval: 30s
+    rules:
+      - alert: GPUUnhealthyWithTenant
+        expr: gpu_health == 0
+        for: 5m
+        labels:
+          severity: critical
+        annotations:
+          # The exporter's own labels are what make this line actionable: it
+          # names the pod sitting on the bad card, not just the card.
+          summary: >-
+            {{ $labels.node }} GPU {{ $labels.gpu_id }} unhealthy
+            (tenant {{ $labels.namespace }}/{{ $labels.pod }})
+
+  # ------------------------------------------------------------------
+  - name: gpu-node-health.patches
+    interval: 60s
+    rules:
+      # These stay quiet until the D1-D7 amdgpu patches land. They exist now
+      # so the patches are not a black box on the day they ship: without
+      # first-class counters there is no way to tell whether a patch is
+      # putting out the fire or starting one.
+      - alert: D1RemediateFiredOnTenant
+        expr: increase(gpuhealth_kernlog_events_total{rule="d1_remediate"}[15m]) > 0
+        labels:
+          severity: critical
+        annotations:
+          summary: "{{ $labels.node }}: D1 force-signalled fences - a tenant job was cancelled"
+
+      - alert: D4WatchdogFired
+        expr: increase(gpuhealth_kernlog_events_total{rule="d4_watchdog"}[15m]) > 0
+        labels:
+          severity: warning
+        annotations:
+          summary: "{{ $labels.node }}: D4 watchdog fired on a stalled fence context"
+
+      - alert: TTMBufferLeak
+        expr: increase(gpuhealth_kernlog_events_total{rule="ttm_giving_up"}[15m]) > 0
+        labels:
+          severity: critical
+        annotations:
+          summary: "{{ $labels.node }}: TTM gave up on a buffer object - VRAM is leaking"

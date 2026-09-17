@@ -1,0 +1,42 @@
+# Routing is deliberately incomplete.
+#
+# Alertmanager will group, deduplicate, silence and show every alert in its
+# UI, but it sends nothing outward: there is no email relay, chat webhook or
+# pager integration configured for this cluster, and picking one is not a
+# decision that should be made silently inside a commit. Wiring a real
+# receiver needs an endpoint and credentials from whoever owns the on-call
+# rotation.
+#
+# This is recorded plainly rather than papered over, because a stack that
+# looks like it is alerting and is not would be the same failure this project
+# exists to remove - one level up.
+
+global:
+  resolve_timeout: 5m
+
+route:
+  receiver: noop
+  group_by: ["alertname", "node"]
+  group_wait: 30s
+  group_interval: 5m
+  # Critical alerts here mean a node is losing GPUs; a 4-hour default repeat
+  # would let one sit un-renotified through most of a shift.
+  repeat_interval: 1h
+  routes:
+    - matchers:
+        - severity = "critical"
+      receiver: noop
+      repeat_interval: 30m
+
+receivers:
+  - name: noop
+
+inhibit_rules:
+  # A node whose GPUs are already known unrecoverable will also trip engine
+  # timeouts and probe failures. Suppress the downstream noise so the page
+  # says one thing.
+  - source_matchers:
+      - alertname = "GPUUnrecoverable"
+    target_matchers:
+      - severity = "warning"
+    equal: ["node"]
