@@ -1,5 +1,6 @@
 """Tests for the signal collectors."""
 
+import builtins
 import os
 import sys
 import tempfile
@@ -281,3 +282,91 @@ def test_unreadable_proc_reports_blind():
     census = DStateCensus("/nonexistent-proc", 60, ["kworker/u26"])
     out = census.collect()
     assert out["readable"] is False
+
+
+def test_a_denied_wchan_is_counted_not_silently_downgraded_to_a_name_guess():
+    """A refused wchan read is missing data, not a negative.
+
+    Reading /proc/<tid>/wchan goes through ptrace_may_access(), and unlike stat
+    it fails the whole read rather than zeroing a few fields, so a confined or
+    unprivileged reader gets PermissionError. Not yet seen on this cluster -
+    the AppArmor ptrace denials in kern.log are the stat read and are harmless
+    (see the dstate module docstring). The old code caught PermissionError in
+    the same handler as "the task exited" and returned "", which sent the
+    caller to the comm-prefix fallback. F11 is the record of why that fallback
+    is worthless here: the tasks actually wedged in the driver were called
+    grpcpp_sync_ser and llama-server.
+
+    So the census must be able to say "I could not tell" - a confident zero
+    built out of refused reads is the failure this whole project is about.
+    """
+    import errno
+
+    with tempfile.TemporaryDirectory() as d:
+        _write_stat(d, 1, "llama-server", "D", wchan="amdgpu_vm_init")
+        _write_stat(d, 2, "some-tenant-binary", "D", wchan="dma_fence_wait")
+        _write_stat(d, 3, "nfsd", "D")  # genuinely absent wchan, not denied
+
+        denied = os.path.join(d, "2", "task", "2", "wchan")
+        real_open = builtins.open
+
+        def fake_open(path, *a, **kw):
+            if str(path) == denied:
+                raise PermissionError(errno.EACCES, "denied by AppArmor")
+            return real_open(path, *a, **kw)
+
+        census = DStateCensus(
+            d, stuck_seconds=0, gpu_comm_prefixes=["kworker/u26"],
+            gpu_wchan_substrings=["dma_fence", "amdgpu"],
+        )
+        builtins.open = fake_open
+        try:
+            out = census.collect()
+        finally:
+            builtins.open = real_open
+
+    assert out["wchan_denied"] == 1, "the refusal has to be visible somewhere"
+    # The absent-wchan task is NOT a denial - those are different facts.
+    assert out["total"] == 3
+
+    by_comm = {o["comm"]: o for o in out["offenders"]}
+    # Still classified (by name, the only thing left) but flagged as a guess.
+    assert by_comm["some-tenant-binary"]["wchan_denied"] is True
+    assert by_comm["llama-server"]["wchan_denied"] is False
+    assert by_comm["nfsd"]["wchan_denied"] is False
+
+
+def test_the_denied_sentinel_never_leaks_into_a_reported_wchan():
+    """Whatever the internal marker is, an operator must never see it."""
+    import errno
+
+    with tempfile.TemporaryDirectory() as d:
+        _write_stat(d, 1, "victim", "D", wchan="amdgpu_vm_init")
+        target = os.path.join(d, "1", "task", "1", "wchan")
+        real_open = builtins.open
+
+        def fake_open(path, *a, **kw):
+            if str(path) == target:
+                raise PermissionError(errno.EACCES, "denied")
+            return real_open(path, *a, **kw)
+
+        census = DStateCensus(
+            d, stuck_seconds=0, gpu_comm_prefixes=[],
+            gpu_wchan_substrings=["amdgpu"],
+        )
+        builtins.open = fake_open
+        try:
+            out = census.collect()
+        finally:
+            builtins.open = real_open
+
+    assert out["offenders"][0]["wchan"] == ""
+    assert "denied" not in out["offenders"][0]["wchan"]
+
+
+def test_an_unreadable_proc_reports_zero_denials_rather_than_omitting_the_key():
+    """The blind-census path must still carry the field its alert reads."""
+    census = DStateCensus("/nonexistent-proc", 60, ["kworker/u26"])
+    out = census.collect()
+    assert out["readable"] is False
+    assert out["wchan_denied"] == 0

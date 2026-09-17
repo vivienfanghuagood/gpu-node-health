@@ -43,10 +43,36 @@ TTM workqueue case and nothing else: the two tasks actually wedged on 0004
 were named `grpcpp_sync_ser` and `llama-server`. What they had in common was
 not their name, it was where they were blocked.
 
-/proc/<tid>/wchan is world-readable and names the kernel function the task is
-sleeping in, so a task blocked anywhere in the DRM/amdgpu/TTM/fence stack is
-classified as GPU-related regardless of what the binary is called. comm
-prefixes remain as a fallback for the case where wchan is empty or unreadable.
+/proc/<tid>/wchan names the kernel function the task is sleeping in, so a task
+blocked anywhere in the DRM/amdgpu/TTM/fence stack is classified as GPU-related
+regardless of what the binary is called. comm prefixes remain as a fallback for
+the case where wchan is empty.
+
+It is not, however, world-readable in the way that sentence originally claimed:
+the read goes through ptrace_may_access(), so a confined or unprivileged reader
+can be refused. A refusal is reported as `wchan_denied` rather than silently
+taking the name-based fallback's answer - the fallback is known not to reach
+the tasks that matter, so a denial is missing information, not a negative
+result. See _read_wchan.
+
+A NOTE ON THE APPARMOR DENIALS IN kern.log
+------------------------------------------
+On these nodes this agent generates a steady stream of
+
+    apparmor="DENIED" operation="ptrace" class="ptrace"
+    profile="cri-containerd.apparmor.d" comm="python" requested_mask="read"
+
+roughly one line per collect cycle. Measured on 0024 2026-09-17: it is the
+/proc/<tid>/stat read, not the wchan read, and it is *not* a failure.
+do_task_stat() consults ptrace_may_access() only to decide whether to fill in
+the wchan/kstkeip/kstkesp fields; when refused it zeroes those three and
+returns the rest, so the `state` character this census depends on is correct
+and open() does not raise. Reading pid 1 is enough to produce a line. The
+apparent one-per-cycle rate is the kernel's audit deduplication, not the number
+of refused reads - a full 1928-pid sweep logs two lines.
+
+Recorded because it is exactly the kind of thing that costs an afternoon: the
+lines name our agent, say DENIED, and mean nothing is wrong.
 """
 
 import os
@@ -86,17 +112,43 @@ def _read_stat(stat_path):
     return comm, state, starttime
 
 
-def _read_wchan(wchan_path):
-    """Return the kernel symbol a task is sleeping in, or "" if unavailable.
+# Returned instead of a symbol when the kernel refused to tell us where a task
+# is blocked. Distinct from "" on purpose - see _read_wchan.
+WCHAN_DENIED = "\x00denied"
 
-    Returns "" rather than raising for every failure mode: the file is absent
-    on a task that just exited, and the kernel writes a literal "0" for a task
-    that is running. Neither is an error worth surfacing.
+
+def _read_wchan(wchan_path):
+    """Return the kernel symbol a task is sleeping in, "", or WCHAN_DENIED.
+
+    "" means there is genuinely nothing to report: the file is absent on a task
+    that just exited, and the kernel writes a literal "0" for a task that is
+    running.
+
+    A permission failure is a different thing and gets its own value. Unlike
+    /proc/<tid>/stat, which degrades to zeroed fields when ptrace_may_access()
+    refuses, wchan fails the whole read with EPERM - so a confined or
+    unprivileged reader gets PermissionError rather than an answer.
+
+    This has not been observed on this cluster: every wchan read attempted on
+    0024 on 2026-09-17 succeeded, including the kernel threads whose stat reads
+    do trip AppArmor (see the module docstring - those denials are the stat
+    read, and they are harmless). The handling is here because the failure mode
+    it prevents is silent. Folding a denial into "" would make the caller fall
+    back to matching the task's *name*, and F11 is the record of why that
+    fallback catches nothing: the three tasks actually wedged in the driver on
+    0004 were called grpcpp_sync_ser, llama-server and kworker/u270:* - no name
+    list reaches them, which is the entire reason wchan is the primary signal.
+
+    So a denied read must not be reported as "this task is not GPU-related". It
+    is "we could not tell", and the difference between those two is the whole
+    subject of this project.
     """
     try:
         with open(wchan_path, "rb") as fh:
             value = fh.read().decode("utf-8", errors="replace").strip()
-    except (FileNotFoundError, ProcessLookupError, PermissionError, OSError):
+    except PermissionError:
+        return WCHAN_DENIED
+    except (FileNotFoundError, ProcessLookupError, OSError):
         return ""
     return "" if value == "0" else value
 
@@ -120,7 +172,11 @@ class DStateCensus:
         # wchan is the stronger signal: it says where the task is blocked, not
         # what it is called. Only fall back to the name when wchan told us
         # nothing.
-        if wchan:
+        #
+        # A DENIED read also falls back to the name, because a guess is all
+        # that is left - but the caller counts those separately rather than
+        # letting the guess pass for an observation.
+        if wchan and wchan != WCHAN_DENIED:
             return any(s in wchan for s in self._gpu_wchan)
         return any(comm.startswith(p) for p in self._gpu_prefixes)
 
@@ -147,11 +203,11 @@ class DStateCensus:
             return {
                 "total": 0, "stuck": 0, "gpu_total": 0, "gpu_stuck": 0,
                 "max_seconds": 0.0, "gpu_max_seconds": 0.0,
-                "readable": False, "offenders": [],
+                "readable": False, "offenders": [], "wchan_denied": 0,
             }
 
         seen = set()
-        total = stuck = gpu_total = gpu_stuck = 0
+        total = stuck = gpu_total = gpu_stuck = wchan_denied = 0
         max_secs = gpu_max_secs = 0.0
         offenders = []
 
@@ -173,6 +229,14 @@ class DStateCensus:
                 # for every thread on the node would dominate the scan cost
                 # for information nothing uses.
                 wchan = _read_wchan(os.path.join(task_dir, "wchan"))
+                denied = wchan == WCHAN_DENIED
+                if denied:
+                    # A task in D whose blocking location we were refused. Its
+                    # GPU classification below is a guess off the task name,
+                    # and the name-based fallback is known not to reach the
+                    # tasks that matter. Counted so the blindness is visible
+                    # instead of being absorbed into a confident zero.
+                    wchan_denied += 1
 
                 total += 1
                 max_secs = max(max_secs, secs)
@@ -187,7 +251,9 @@ class DStateCensus:
                         gpu_stuck += 1
                     offenders.append(
                         {"tid": int(tid), "pid": int(pid), "comm": comm,
-                         "wchan": wchan, "seconds": round(secs, 1),
+                         "wchan": "" if denied else wchan,
+                         "wchan_denied": denied,
+                         "seconds": round(secs, 1),
                          "gpu_worker": is_gpu}
                     )
 
@@ -208,5 +274,10 @@ class DStateCensus:
             "max_seconds": round(max_secs, 1),
             "gpu_max_seconds": round(gpu_max_secs, 1),
             "readable": True,
+            # Tasks in D whose wchan the kernel refused to disclose, so their
+            # GPU/non-GPU split is a name-based guess. Non-zero means the
+            # census is partially blind in exactly the direction that hides a
+            # hang - alert on it, do not read it as health.
+            "wchan_denied": wchan_denied,
             "offenders": offenders[:20],
         }

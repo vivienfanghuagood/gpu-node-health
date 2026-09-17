@@ -89,6 +89,31 @@ groups:
             its all-clear means nothing. Treat this node as UNKNOWN, not
             healthy.
 
+      - alert: GPUDStateCensusPartiallyBlind
+        # The D-state census classifies a task as GPU-related by where it is
+        # blocked (/proc/<tid>/wchan), not by what it is called, because the
+        # tasks wedged on 0004 were named grpcpp_sync_ser and llama-server and
+        # no name list reaches those. But that read goes through
+        # ptrace_may_access(), and unlike stat it fails whole rather than
+        # zeroing a few fields, so a confined reader can be refused outright.
+        # Not observed on this cluster as of 2026-09-17 - the AppArmor ptrace
+        # denials our agent generates in kern.log are the stat read and are
+        # harmless. This rule exists so that if it ever does happen it is
+        # visible, because the fallback it forces is silent.
+        #
+        # A denied read leaves only the name-based fallback, i.e. a guess made
+        # with the method already known not to work. That is not a healthy
+        # zero, it is an unmeasured one, and this is the difference the whole
+        # project is about. Warning rather than critical: the census still
+        # reports the task as stuck, it just cannot attribute it to the GPU.
+        expr: max by (node) (gpuhealth_dstate_wchan_denied) > 0
+        for: 15m
+        labels:
+          severity: warning
+        annotations:
+          summary: "{{ $labels.node }}: D-state census was refused wchan on some tasks and is guessing"
+          description: "Check the AppArmor profile on the agent's container. Until then, gpu_stuck on this node is a lower bound, not a count."
+
       - alert: GPUHealthAgentDown
         expr: up{job="gpu-health-agent"} == 0
         for: 5m

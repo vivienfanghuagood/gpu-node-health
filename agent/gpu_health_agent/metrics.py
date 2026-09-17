@@ -99,6 +99,17 @@ def render(node, state):
         "proc_readable", d.get("readable", False),
         help_text="0 means /proc is unreadable and the D-state census is blind.",
     )
+    b.metric(
+        "dstate_wchan_denied", d.get("wchan_denied", 0),
+        help_text="Tasks in D whose /proc/<tid>/wchan the kernel refused to "
+                  "disclose (the read goes through ptrace_may_access and "
+                  "fails whole, unlike stat). Their "
+                  "GPU/non-GPU split falls back to matching the task name, "
+                  "which is known not to reach the tasks that matter - the "
+                  "ones wedged on 0004 were called grpcpp_sync_ser and "
+                  "llama-server. Non-zero means the census is blind in "
+                  "exactly the direction that hides a hang.",
+    )
     for scope, total_key, stuck_key, max_key in (
         ("all", "total", "stuck", "max_seconds"),
         ("gpu_worker", "gpu_total", "gpu_stuck", "gpu_max_seconds"),
