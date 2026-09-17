@@ -154,6 +154,61 @@ The agent is unprivileged (uid 10001, read-only rootfs, all capabilities
 dropped) and only reads `/proc` and `/var/log`. It would answer the question
 within one collection interval. Removing the label is the rollback.
 
+**Deferred.** 0004/0005/0006 are not to be touched for now — too much else
+depends on them. That includes the labelling above and any reboot.
+
+### The same chain, on two other nodes
+
+0004 is not a one-off. Sweeping the retained kernel logs (`kern.log*`
+including the rotated `.gz`, never `dmesg`) on the three worker nodes turns up
+the same signatures with different endings, and the differences are what
+justify the severity split in [`kernlog.py`](../agent/gpu_health_agent/signals/kernlog.py).
+
+**0024, 2026-08-29 — the identical chain, survived.**
+
+```
+11:15:26  [drm:amddrm_sched_entity_push_job] *ERROR* Trying to push to a killed entity
+11:19:18  INFO: task llama-server:112094 blocked for more than 122 seconds.
+11:19:18  INFO: task kworker/u266:1:112173 blocked for more than 122 seconds.
+          ... 9 more kworker/u266:* in the same second
+```
+
+Same orphan-fence error, same tenant name (`llama-server`) as the first
+casualty, same kworker pile-up behind it. **The gap between the error and the
+first hung task is 3 minutes 52 seconds** — on 0004 the same gap was about a
+minute. That window is the entire value of the `sched_killed_entity` rule: it
+is the last moment the node is still distinguishable from a healthy one, and
+it arrives minutes before the hung-task watchdog says anything. 0024's D-state
+count today is 0, so this one cleared.
+
+**0029, 2026-09-07 — the precursor alone, no wedge.**
+
+```
+23:17:28 .. 23:19:00   amdgpu 0000:83:00.0: No more SDMA queue to allocate (16 total queues)   × 24
+```
+
+A 90-second burst on one device, then nothing. No `killed entity` before or
+after it, and 0029's D-state count today is 0. (Its August `MES might be in
+unrecoverable state` / `GPU reset begin` pair is on a *different* device,
+`43:00.0`, and is the known 2026-08-19/20 incident.)
+
+This is the case that matters for tuning: 0004 emitted the same SDMA line on
+the same date and *is* wedged; 0029 emitted it 24 times and recovered. **SDMA
+queue exhaustion on its own is survivable** — it says contexts are leaking,
+not that the node is gone. So it is a `warning`, and only `killed entity` is
+`fatal`. That split was chosen from 0004's evidence alone; 0024 and 0029
+confirm it independently.
+
+**0043** is clean across its entire retained history — no fatal signature of
+any kind.
+
+Two consequences. First, the fatal rule would have fired on a *worker* node,
+not just on the control-plane nodes we cannot touch. Second, a node that
+recovers still leaves the signature behind, so the conditions must key on
+activity inside a 15-minute window rather than on cumulative counts — which is
+what [`conditions.py`](../agent/gpu_health_agent/conditions.py) already does,
+and this is the evidence for why.
+
 ---
 
 ## 2. Dead metrics exporters, reported Ready

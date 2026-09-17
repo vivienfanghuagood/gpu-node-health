@@ -195,5 +195,23 @@ no init container left in the pod spec.
   D**, no condition raised. The added sensitivity does not come with false
   positives on a busy serving node.
 
+2026-09-17, node conditions enabled (`NODE_CONDITIONS_ENABLED=true`):
+
+- all five `gpu-health.amd.io/*` conditions now appear on 0024/0029/0043, and
+  the kubelet's own conditions (`Ready`, `MemoryPressure`, `DiskPressure`,
+  `PIDPressure`, `NetworkUnavailable`) are intact alongside them — which is
+  the thing the strategic-merge patch had to get right and a plain merge patch
+  would have got wrong.
+
+2026-09-17, the new kernel-log rules against history:
+
+- the three workers' retained `kern.log*` were swept for the signatures
+  learned from 0004. **0024 carries the identical chain on 2026-08-29** —
+  `Trying to push to a killed entity`, then `llama-server` and ten
+  `kworker/u266:*` hung 3m52s later — and recovered. **0029 carries the SDMA
+  precursor alone** (24 lines in 90s on 2026-09-07) and never wedged. 0043 is
+  clean. See [docs/cluster-faults.md](docs/cluster-faults.md); this is why
+  `killed entity` is fatal and SDMA exhaustion is only a warning.
+
 Not yet validated: S5 (no node carries the D1–D7 patch set yet) and the
 `gpu_health=0` branch of S4 (no GPU has gone unhealthy since rollout).

@@ -189,6 +189,11 @@ this from healthy.
 | **end-to-end injection** | `MES might be in unrecoverable state` written to `/dev/kmsg` on 0024 → `GPUUnrecoverable` **and** `GPUFatalKernelEvent` firing in Alertmanager within ~100s, via two independent rule paths |
 | missing-agent join | returns empty live; returns 0024 when 0024's agent series is excluded |
 
-Not yet validated: notification delivery (there is no receiver), and
-`GPUNodeConditionFromAPIServer` (the agent still runs with
-`NODE_CONDITIONS_ENABLED=false`, so no GPU conditions exist on Node objects).
+2026-09-17: `NODE_CONDITIONS_ENABLED` was turned on, so the five
+`gpu-health.amd.io/*` conditions now exist on 0024/0029/0043 and
+`GPUNodeConditionFromAPIServer` has real data through kube-state-metrics for
+the first time. The kubelet's own conditions survived the patch.
+
+Not yet validated: notification delivery — there is still no receiver, and
+that remains the blocker for `gpu-node-guard` ever leaving observe mode, since
+"摘除必告警" cannot hold when alerts go nowhere.

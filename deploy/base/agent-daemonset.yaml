@@ -74,12 +74,20 @@ spec:
               valueFrom:
                 fieldRef:
                   fieldPath: spec.nodeName
-            # Observer mode. The agent publishes metrics only and writes
-            # nothing to the cluster until this is flipped, per the rollout
-            # plan: trust the metrics first, then let them drive conditions,
-            # then let conditions drive the guard.
+            # Step 2 of the rollout: trust the metrics first, then let them
+            # drive conditions, then let conditions drive the guard. Enabled
+            # 2026-09-17 after the metrics ran clean on 0024/0029/0043 and
+            # after the thread-level D-state census was validated against a
+            # node that is genuinely wedged (see docs/cluster-faults.md).
+            #
+            # This writes ONLY .status.conditions, via a strategic-merge patch
+            # keyed on `type`, so the kubelet's own conditions are untouched.
+            # Nothing consumes these yet - gpu-node-guard does not exist - so
+            # the blast radius is a few extra rows in `kubectl describe node`.
+            # Set back to "false" to stop writing; existing conditions then
+            # stop being heartbeated and go stale rather than disappearing.
             - name: NODE_CONDITIONS_ENABLED
-              value: "false"
+              value: "true"
             - name: COLLECT_INTERVAL_SECONDS
               value: "15"
             # Persistent files only. dmesg is a ring buffer and had already
