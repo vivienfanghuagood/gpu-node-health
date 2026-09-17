@@ -110,6 +110,33 @@ def test_rotation_is_followed():
         assert counts["gpu_reset_begin"] == 1, counts
 
 
+def test_orphan_fence_signature_is_fatal():
+    """Verbatim from 0004's kern.log, 2026-09-02T17:36 - one minute before the
+    first task wedged in the driver and stayed there for 19 days.
+
+    This is the earliest point at which the hang is still distinguishable from
+    normal operation, and until now no rule matched it.
+    """
+    lines = [
+        "[drm:amddrm_sched_entity_push_job [amd_sched]] *ERROR* Trying to "
+        "push to a killed entity",
+        "amdgpu 0000:43:00.0: amdgpu: No more SDMA queue to allocate "
+        "(16 total queues)",
+    ]
+    with tempfile.TemporaryDirectory() as d:
+        path = os.path.join(d, "kern.log")
+        open(path, "w").close()
+        w = KernelLogWatcher([path])
+        snap = _drain(w, path, lines)
+
+    assert snap["counts"]["sched_killed_entity"] == 1
+    assert snap["counts"]["sdma_queue_exhausted"] == 1
+    sev = {name: s for name, _, s in __import__(
+        "gpu_health_agent.signals.kernlog", fromlist=["RULES"]).RULES}
+    assert sev["sched_killed_entity"] == "fatal"
+    assert sev["sdma_queue_exhausted"] == "warning"
+
+
 def test_unreadable_file_is_reported_not_swallowed():
     with tempfile.TemporaryDirectory() as d:
         path = os.path.join(d, "does-not-exist.log")
@@ -122,24 +149,87 @@ def test_unreadable_file_is_reported_not_swallowed():
 
 # --- /proc parsing -------------------------------------------------------
 
-def _write_stat(root, pid, comm, state, starttime=100):
-    d = os.path.join(root, str(pid))
+def _write_stat(root, pid, comm, state, starttime=100, tid=None, wchan=None):
+    """Build a fake /proc/<pid>/task/<tid> entry.
+
+    The census reads per-thread stat, so a fixture that only writes
+    /proc/<pid>/stat describes a tree the agent never looks at.
+    """
+    tid = pid if tid is None else tid
+    d = os.path.join(root, str(pid), "task", str(tid))
     os.makedirs(d, exist_ok=True)
     fields = ["0"] * 50
     fields[0] = state
     fields[19] = str(starttime)
     with open(os.path.join(d, "stat"), "w") as fh:
-        fh.write(f"{pid} ({comm}) " + " ".join(fields) + "\n")
+        fh.write(f"{tid} ({comm}) " + " ".join(fields) + "\n")
+    if wchan is not None:
+        with open(os.path.join(d, "wchan"), "w") as fh:
+            fh.write(wchan)
 
 
 def test_comm_containing_parens_and_spaces_is_parsed():
     """Userspace controls comm; splitting on whitespace would misparse state."""
     with tempfile.TemporaryDirectory() as d:
         _write_stat(d, 42, "we (are) evil", "D")
-        comm, state, starttime = _read_stat(d, 42)
+        comm, state, starttime = _read_stat(
+            os.path.join(d, "42", "task", "42", "stat")
+        )
         assert comm == "we (are) evil"
         assert state == "D"
         assert starttime == 100
+
+
+def test_wedged_thread_under_a_zombie_leader_is_seen():
+    """The 0004 case: leader is Z, one thread is wedged in the amdgpu driver.
+
+    A census that lists /proc and reads the leader's state reports this node
+    as having zero D-state processes, which is how it stayed invisible for 19
+    days. Keyed off the real tids and wchan observed on the node.
+    """
+    with tempfile.TemporaryDirectory() as d:
+        _write_stat(d, 2423359, "gpuagent", "Z")
+        _write_stat(d, 2423359, "grpcpp_sync_ser", "D", tid=510392,
+                    wchan="dma_fence_wait_any_timeout")
+
+        census = DStateCensus(
+            d, stuck_seconds=0, gpu_comm_prefixes=["kworker/u26"],
+            gpu_wchan_substrings=["dma_fence", "amdgpu"],
+        )
+        out = census.collect()
+
+    assert out["total"] == 1
+    # Classified GPU-related by wchan; its name matches no prefix we have.
+    assert out["gpu_total"] == 1
+    assert out["gpu_stuck"] == 1
+    assert out["offenders"][0]["tid"] == 510392
+    assert out["offenders"][0]["comm"] == "grpcpp_sync_ser"
+    assert out["offenders"][0]["wchan"] == "dma_fence_wait_any_timeout"
+
+
+def test_wchan_beats_comm_and_comm_is_only_a_fallback():
+    with tempfile.TemporaryDirectory() as d:
+        # A tenant binary blocked in the driver: no name-based rule catches it.
+        _write_stat(d, 1, "llama-server", "D", wchan="amdgpu_vm_init")
+        # A kworker blocked on something unrelated to the GPU.
+        _write_stat(d, 2, "kworker/u266:1+ttm", "D", wchan="nfs_wait_bit_killable")
+        # wchan unreadable: fall back to the name.
+        _write_stat(d, 3, "kworker/u266:2+ttm", "D")
+        _write_stat(d, 4, "nfsd", "D")
+
+        census = DStateCensus(
+            d, stuck_seconds=0, gpu_comm_prefixes=["kworker/u26"],
+            gpu_wchan_substrings=["dma_fence", "amdgpu"],
+        )
+        out = census.collect()
+
+    assert out["total"] == 4
+    assert out["gpu_total"] == 2   # llama-server (wchan) + pid 3 (fallback)
+    by_comm = {o["comm"]: o["gpu_worker"] for o in out["offenders"]}
+    assert by_comm["llama-server"] is True
+    assert by_comm["kworker/u266:1+ttm"] is False   # wchan overrides the name
+    assert by_comm["kworker/u266:2+ttm"] is True    # no wchan, name wins
+    assert by_comm["nfsd"] is False
 
 
 def test_gpu_worker_in_d_is_counted_and_timed():

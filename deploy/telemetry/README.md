@@ -116,13 +116,33 @@ kubectl -n amd-telemetry patch deployment grafana \
 letting the UI save over them would recreate exactly the drift between "what
 was reviewed" and "what is running" that this project exists to remove.
 
-## Two cluster faults found while deploying this
+## Three cluster faults found while deploying this
 
-Root causes for both are in [`docs/cluster-faults.md`](../../docs/cluster-faults.md),
-with the exact fix for each. Neither is applied yet: all of them touch nodes
-carrying other people's services.
+Root causes for all three are in [`docs/cluster-faults.md`](../../docs/cluster-faults.md),
+with the exact fix for each.
 
-**1. Cluster DNS is broken for every pod.** The kubelets are configured with
+**1. Node 0004 is wedged in the amdgpu driver, right now.** 272 tasks in
+uninterruptible sleep, every one of them in the DMA-fence path; the oldest has
+been there 19 days. It got that way on 2026-09-02 with
+`[drm:amddrm_sched_entity_push_job] *ERROR* Trying to push to a killed entity`
+— the orphan-fence link of the August incident chain, verbatim — and the
+kernel's hung-task watchdog named a tenant (`llama-server`) among the
+casualties. The node reports Ready with 8 healthy GPUs and no alert has ever
+fired. Any new process that opens `/dev/dri/*` on it hangs in `open()`, which
+is why the dead exporter pods below cannot be deleted. There is no software
+fix: a task in `D` cannot be killed. 0005 and 0006 show the identical
+containerd symptom but are not reachable over SSH, so their driver state is
+inferred rather than measured.
+
+Finding this exposed two blind spots in our own agent, both now closed: the
+D-state census listed `/proc` (thread-group leaders only, so a wedged thread
+under a zombie leader was invisible), and it classified GPU tasks by process
+name (`kworker/u26`, which matches none of the three names actually wedged).
+It now walks `/proc/<pid>/task/<tid>` and classifies by `wchan` — where the
+task is blocked, not what it is called. `Trying to push to a killed entity` is
+now a **fatal** kernel-log rule feeding `GPUUnrecoverable`.
+
+**2. Cluster DNS is broken for every pod.** The kubelets are configured with
 `clusterDNS: 10.232.0.10` while the kube-dns Service lives at `10.233.0.10` —
 one digit, cluster-wide, since install. `kubernetes.default` does not resolve
 from any pod. Every Deployment here carries a `dnsConfig` pointing at the real
@@ -131,7 +151,7 @@ second Service, because 10.232.0.10 is in the pod CIDR, outside the Service
 CIDR the API server allocates from. The fix is kubelet config plus a staged
 kubelet restart.
 
-**2. Three of five AMD metrics exporters are dead and reported Ready.** All
+**3. Three of five AMD metrics exporters are dead and reported Ready.** All
 three died on the identical line — `exporter slurm.go:78: too many open
 files` — weeks apart. It is not an fd limit: the process had 12 fds against a
 soft limit of 1024. It is `fs.inotify.max_user_instances`, at the kernel
@@ -146,8 +166,12 @@ becomes a zombie, and the operator's DaemonSet has no readiness or liveness
 probe. The `DeviceConfig` CRD has no field for one and the DaemonSet is
 owner-referenced by the operator, so it cannot be fixed where it belongs.
 
-The ceiling fix is `kubectl apply -k deploy/node-tuning`. The supervision gap
-stays open and is picked up by `gpu-node-guard`.
+The ceiling fix — `kubectl apply -k deploy/node-tuning` — is **applied**: all
+seven nodes went 128 → 8192 on 2026-09-17, so 0024/0029/0043 are no longer one
+pod-churn from the same death. Deleting the three dead pods was authorised and
+issued, and **cannot complete**: fault 1 holds their containers open, so
+`up{job="amd-gpu-exporter"}` is 2/5 and stays there until those nodes reboot.
+The supervision gap stays open and is picked up by `gpu-node-guard`.
 
 `AMDMetricsExporterDown` is currently the only thing that distinguishes any of
 this from healthy.

@@ -53,13 +53,21 @@ class Config:
     # --- S2 D-state census --------------------------------------------------
     DSTATE_ENABLED = _bool("DSTATE_ENABLED", True)
     PROC_PATH = os.getenv("PROC_PATH", "/proc")
-    # A process in uninterruptible sleep this long is reported as stuck. The
+    # A task in uninterruptible sleep this long is reported as stuck. The
     # kernel's own hung-task watchdog uses 120s; we report earlier so an alert
     # can fire before the node is unrecoverable.
     DSTATE_STUCK_SECONDS = _int("DSTATE_STUCK_SECONDS", 60)
-    # Kernel threads whose names match these prefixes are the TTM/GPU
-    # workqueue workers. On the wedged nodes these were kworker/u266:* and
-    # kworker/u267:* in state D, which was the ONLY early signal available.
+    # Where a task is blocked, read from /proc/<tid>/wchan. This is the primary
+    # classifier: on 0004 the two tasks wedged in the amdgpu driver were named
+    # `grpcpp_sync_ser` and `llama-server`, so no list of process names would
+    # have caught them - but both were sleeping in dma_fence_wait_any_timeout.
+    DSTATE_GPU_WCHAN_SUBSTRINGS = _list(
+        "DSTATE_GPU_WCHAN_SUBSTRINGS", "dma_fence,amdgpu,ttm_,drm_,kfd_"
+    )
+    # Fallback for when wchan is empty or unreadable. Kernel threads whose
+    # names match these prefixes are the TTM/GPU workqueue workers; on the
+    # wedged nodes these were kworker/u266:* and kworker/u267:* in state D,
+    # which was the ONLY early signal available.
     DSTATE_GPU_COMM_PREFIXES = _list("DSTATE_GPU_COMM_PREFIXES", "kworker/u26")
 
     # --- S4 AMD device-metrics-exporter -------------------------------------

@@ -17,8 +17,8 @@ The guiding rule for everything here: **silence must never read as health.**
 |---|---|---|
 | `gpu-health-agent` | DaemonSet, one per GPU node | running on 0024/0029/0043 in observer mode |
 | telemetry stack | vmagent / vmalert / Alertmanager / KSM / node-exporter | deployed, see [deploy/telemetry](deploy/telemetry/) |
-| dashboards | Grafana, folder "GPU Health" | in the repo; mount patch not applied yet |
-| node tuning | DaemonSet, fleet-wide | written, not applied — see [docs/cluster-faults.md](docs/cluster-faults.md) |
+| dashboards | Grafana, folder "GPU Health" | provisioned and serving at `:30091` |
+| node tuning | DaemonSet, fleet-wide | applied — all 7 nodes 128 → 8192 inotify instances |
 | `gpu-node-guard` | Deployment, leader-elected | not started |
 
 The agent only observes and reports. Cordoning lives in the guard, a separate
@@ -30,9 +30,18 @@ take a node out of service.
 | Signal | Source | Catches |
 |---|---|---|
 | S1 kernel log | `/var/log/kern.log`, `/var/log/syslog` | MES unrecoverable, GPU reset, VRAM loss, hung tasks, ring timeouts |
-| S2 D-state census | `/proc/*/stat` via hostPID | `kworker/u26*+ttm` wedged in uninterruptible sleep |
+| S2 D-state census | `/proc/*/task/*/stat` + `wchan` via hostPID | any task wedged in the DRM/amdgpu/TTM/fence stack |
 | S4 AMD exporter | node-local `default-metrics-exporter` | ECC/RAS, `gpu_health`, and GPU → tenant pod attribution |
 | S5 patch counters | sysfs | D1–D7 amdgpu patch activity (absent today; not an error) |
+
+**S2 counts tasks, not processes, and classifies by `wchan`, not by name.**
+Both were learned the expensive way. On 0004 the wedged task is a *thread*
+whose group leader is already a zombie, so listing `/proc` sees `Z` and reports
+the node clean; and the three things actually wedged there are called
+`kworker/u270:*`, `grpcpp_sync_ser` and `llama-server`, so no list of process
+names would have caught them. What they share is where they are blocked —
+`dma_fence_wait_any_timeout`, readable without privilege from
+`/proc/<tid>/wchan`. See [docs/cluster-faults.md](docs/cluster-faults.md).
 
 **Never read `dmesg`.** It is a ring buffer and had already wrapped on every
 long-uptime node in this fleet, destroying the evidence for the incidents this
@@ -176,6 +185,15 @@ On 0029 and 0043, the exporter path:
 Later the same day all three nodes were moved off the ConfigMap overlay onto
 the digest-pinned Harbor image, and re-checked: same exporter URLs, same 8/8,
 no init container left in the pod spec.
+
+2026-09-17, the thread-level D-state census (`0.2.0`):
+
+- run against 0004's live `/proc`, which has a node genuinely wedged in the
+  driver: **272 tasks in D, all of them GPU-classified**, stable across five
+  samples over 100s. A full scan costs **0.12s**; the interval is 30s.
+- rolled out to 0024/0029/0043, all three of which are healthy: **0 tasks in
+  D**, no condition raised. The added sensitivity does not come with false
+  positives on a busy serving node.
 
 Not yet validated: S5 (no node carries the D1–D7 patch set yet) and the
 `gpu_health=0` branch of S4 (no GPU has gone unhealthy since rollout).

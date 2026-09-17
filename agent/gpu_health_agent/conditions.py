@@ -23,7 +23,14 @@ Design notes that matter:
 import collections
 
 # Kernel-log rules that each condition watches.
-_FATAL_HANG_RULES = ("mes_unrecoverable", "gpu_reset_begin", "vram_lost")
+# sched_killed_entity belongs here rather than with the engine timeouts: it is
+# not a job that ran too long, it is a job submitted against a scheduler entity
+# that no longer exists. On 0004 that line appeared once and the node has had a
+# task permanently wedged in amdgpu ever since - there is no recovery path from
+# it short of a GPU reset.
+_FATAL_HANG_RULES = (
+    "mes_unrecoverable", "gpu_reset_begin", "vram_lost", "sched_killed_entity",
+)
 _WORKQUEUE_RULES = ("gpu_workqueue_blocked",)
 _ENGINE_RULES = ("ring_timeout", "job_timedout")
 

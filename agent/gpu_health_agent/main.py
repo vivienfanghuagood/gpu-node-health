@@ -62,7 +62,10 @@ class Collector:
         )
         self._dstate = (
             DStateCensus(
-                cfg.PROC_PATH, cfg.DSTATE_STUCK_SECONDS, cfg.DSTATE_GPU_COMM_PREFIXES
+                cfg.PROC_PATH,
+                cfg.DSTATE_STUCK_SECONDS,
+                cfg.DSTATE_GPU_COMM_PREFIXES,
+                cfg.DSTATE_GPU_WCHAN_SUBSTRINGS,
             )
             if cfg.DSTATE_ENABLED else None
         )

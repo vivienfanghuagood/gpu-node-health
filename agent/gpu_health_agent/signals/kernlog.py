@@ -36,7 +36,23 @@ RULES = [
         r"kworker/u\d+:\d+.*blocked for more than \d+ seconds",
         "fatal",
     ),
+    # The orphan-fence signature. The GPU scheduler is being handed a job for
+    # an entity that has already been torn down - which is precisely what the
+    # incident chain produces when the platform mass-kills pods while work is
+    # in flight. Observed on 0004 at 2026-09-02T17:36, one minute before the
+    # first task wedged in the driver and never came back:
+    #
+    #   [drm:amddrm_sched_entity_push_job [amd_sched]] *ERROR* Trying to push
+    #   to a killed entity
+    #
+    # Nothing was watching for it, and it is the earliest point at which this
+    # class of hang is still distinguishable from normal operation.
+    ("sched_killed_entity", r"Trying to push to a killed entity", "fatal"),
     # --- warning --------------------------------------------------------
+    # Ring/queue resource exhaustion. Not fatal by itself, but on 0004 it
+    # followed the killed-entity errors by days as leaked contexts accumulated:
+    #   amdgpu 0000:43:00.0: amdgpu: No more SDMA queue to allocate (16 total)
+    ("sdma_queue_exhausted", r"No more \S+ queue to allocate", "warning"),
     ("ring_timeout", r"ring \S+ timeout", "warning"),
     ("job_timedout", r"job timedout", "warning"),
     ("gpu_reset_succeeded", r"GPU reset\(\d+\) succeeded|GPU reset succeeded", "warning"),

@@ -105,6 +105,11 @@ spec:
             # reason the pod exists; nothing else here needs privilege, which
             # is why the long-running container below has none.
             privileged: true
+            # privileged is not the same as root, and the agent image this
+            # borrows declares USER 10001. Without this line the write to
+            # /proc/sys fails with EACCES even though the container has every
+            # capability there is.
+            runAsUser: 0
           resources:
             requests:
               cpu: 10m

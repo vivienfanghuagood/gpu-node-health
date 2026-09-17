@@ -105,15 +105,18 @@ def render(node, state):
     ):
         b.metric(
             "dstate_processes", d.get(total_key, 0), labels={"scope": scope},
-            help_text="Processes currently in uninterruptible sleep.",
+            help_text="Tasks (threads) currently in uninterruptible sleep. "
+                      "Counted per thread, not per process: the wedged task "
+                      "is often a thread of a process whose leader has "
+                      "already exited.",
         )
         b.metric(
             "dstate_stuck_processes", d.get(stuck_key, 0), labels={"scope": scope},
-            help_text="Processes in D for longer than the stuck threshold.",
+            help_text="Tasks in D for longer than the stuck threshold.",
         )
         b.metric(
             "dstate_max_seconds", d.get(max_key, 0), labels={"scope": scope},
-            help_text="Longest continuous time any process has spent in D.",
+            help_text="Longest continuous time any task has spent in D.",
         )
 
     # --- S4 AMD exporter --------------------------------------------------

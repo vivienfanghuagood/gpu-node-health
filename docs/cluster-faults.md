@@ -1,16 +1,166 @@
-# Two cluster faults, their root causes, and the fixes
+# Three cluster faults, their root causes, and the fixes
 
-Both were found while deploying the telemetry stack. Neither is caused by this
-project and neither is specific to GPU health — but both are exactly the kind
-of thing this project exists to stop leaving in place: a failure that is
+All three were found while deploying the telemetry stack. None is caused by
+this project and none is specific to GPU health — but all three are exactly the
+kind of thing this project exists to stop leaving in place: a failure that is
 invisible from every dashboard, sitting quietly until it matters.
 
-Each section ends with the fix. None of them are applied yet; all three touch
-nodes carrying other people's services.
+Fault 1 is not history. It is happening now.
 
 ---
 
-## 1. Dead metrics exporters, reported Ready
+## 1. Node 0004 is wedged in the amdgpu driver, and has been for 19 days
+
+### What it looks like
+
+Nothing. That is the entire problem. The node is `Ready`, the device plugin
+advertises 8 healthy GPUs, `gpu_health` reads 1, and no alert has ever fired.
+
+### What is actually true
+
+As of 2026-09-17, on `wx-ms-w7900d-0004`:
+
+```
+272 tasks in state D, every one of them blocked in the DMA-fence path
+  1 × python3               wchan dma_fence_wait_any_timeout
+271 × kworker/u270:*+ttm    wchan dma_fence_default_wait
+```
+
+Sampled five times over 100 seconds: the count never moved and no task ever
+left D. These are not transient waits under load. They are permanent.
+
+The oldest of them has been there **19 days, 15 hours** — the gRPC worker
+thread of the metrics exporter's `gpuagent`:
+
+```
+tgid 2423359 (gpuagent)          state Z
+ tid  510392 (grpcpp_sync_ser)   state D   19d15h   dma_fence_wait_any_timeout
+```
+
+with this kernel stack:
+
+```
+dma_fence_wait_any_timeout
+drm_suballoc_new            [amdkcl]
+amdgpu_sa_bo_new            [amdgpu]
+amdgpu_ib_get               [amdgpu]
+amdgpu_job_alloc_with_ib    [amdgpu]
+amdgpu_vm_sdma_alloc_job    [amdgpu]
+amdgpu_vm_sdma_prepare      [amdgpu]
+amdgpu_vm_pt_clear          [amdgpu]
+amdgpu_vm_init              [amdgpu]
+amdgpu_driver_open_kms      [amdgpu]
+drm_file_alloc / drm_open / drm_stub_open / chrdev_open / do_filp_open
+```
+
+Read that stack bottom-up: the task called `open("/dev/dri/card*")`. Opening
+the device makes the driver initialise a GPU VM, which needs to clear page
+tables, which needs an SDMA indirect buffer, which needs space in the
+suballocator, which is full of buffers pinned by fences that will never
+signal. So the *open* blocks. Forever, uninterruptibly.
+
+**Any new process that touches a GPU on this node hangs at `open()`.** Not the
+GPU work — the open. That is why `kubectl delete pod` cannot finish and why a
+host-side `kill -9` does nothing: you cannot signal a task in `D`.
+
+### Root cause
+
+The kernel log names it, at 2026-09-02T17:36:28:
+
+```
+[drm:amddrm_sched_entity_push_job [amd_sched]] *ERROR* Trying to push to a killed entity
+```
+
+A job was submitted to a GPU scheduler entity that had already been torn down.
+That is the orphan-fence link of the August incident chain, verbatim: the
+platform mass-kills pods while work is in flight, the entity goes away, the
+fences it owned are never signalled, and everything that later needs the
+resources those fences pin waits forever.
+
+The same minute, the kernel's hung-task watchdog began reporting — and what it
+reported was not only ours:
+
+```
+INFO: task grpcpp_sync_ser:3954076 blocked for more than 122 seconds.
+INFO: task grpcpp_sync_ser:510392  blocked for more than 122 seconds.
+INFO: task llama-server:2908826    blocked for more than 122 seconds.
+```
+
+`llama-server` is a tenant. Days later the driver started reporting resource
+exhaustion as leaked contexts piled up:
+
+```
+2026-09-07  amdgpu 0000:43:00.0: amdgpu: No more SDMA queue to allocate (16 total queues)
+```
+
+Nobody was watching any of these lines.
+
+### Why our own agent would also have missed it
+
+Two gaps, both now fixed, both worth stating because they are the same mistake
+in two places — **describing the fault by what it is called instead of by what
+it is doing.**
+
+**The D-state census listed `/proc`, which yields thread-group leaders only.**
+The wedged task here is a *thread*; its leader is a zombie. A process-level
+census reads `Z`, skips it, and reports zero D-state processes on a node with
+272 of them. `dstate.py` now walks `/proc/<pid>/task/<tid>`.
+
+**The GPU classifier matched process names against `kworker/u26`.** The tasks
+actually wedged are `kworker/u270:*` (not `u26`), `grpcpp_sync_ser` and
+`llama-server`. No list of names would have caught them. What they have in
+common is not what they are called, it is where they are blocked — so the
+classifier now reads `/proc/<tid>/wchan`, which is world-readable and names
+the kernel function, and matches on `dma_fence` / `amdgpu` / `ttm_` / `drm_` /
+`kfd_`. Names remain only as a fallback when `wchan` is unavailable.
+
+With both fixes, a full scan of 0004 costs 0.12s and reports
+`gpu_stuck=272, max_seconds=<forever>` — which crosses `GPUWorkqueueStalled`
+immediately.
+
+`sched_killed_entity` and `sdma_queue_exhausted` are now kernel-log rules,
+the first classified **fatal** (it feeds `GPUUnrecoverable`). It is the
+earliest moment at which this hang is still distinguishable from healthy
+operation.
+
+### Fix
+
+**There is no software fix.** A task in uninterruptible sleep cannot be
+killed, and the fences pinning the suballocator cannot be signalled from
+userspace. The node needs a GPU reset, and in practice a reboot.
+
+0004/0005/0006 are cordoned control-plane nodes, so nothing is being scheduled
+onto them — but they are also the nodes running the metrics exporters, and
+they carry other people's services. **Rebooting them is not this project's
+call to make.** What this document can do is say plainly that the node is in
+the failure state the August incidents ended in, that it got there on
+2026-09-02, and that nothing in the cluster noticed for 19 days.
+
+### What is not yet confirmed
+
+0005 and 0006 show the *identical* containerd symptom — `KillContainer` and
+`KillPodSandbox` both returning `DeadlineExceeded` indefinitely, which is what
+a task stuck in `D` inside the container does. Neither node is reachable over
+SSH from here, so their driver state is inferred, not measured.
+
+The cheap way to settle it is to label them for the agent:
+
+```sh
+kubectl label node wx-ms-w7900d-0005 gpu-health.amd.io/agent=true
+kubectl label node wx-ms-w7900d-0006 gpu-health.amd.io/agent=true
+```
+
+The agent is unprivileged (uid 10001, read-only rootfs, all capabilities
+dropped) and only reads `/proc` and `/var/log`. It would answer the question
+within one collection interval. Removing the label is the rollback.
+
+---
+
+## 2. Dead metrics exporters, reported Ready
+
+This is a **second, independent fault** that happened to land on the same
+pods. Fault 1 is why `gpuagent` stopped answering; this is why the exporter
+process itself died and never came back.
 
 ### What it looks like
 
@@ -42,7 +192,7 @@ the container's process had **12 fds open against a soft limit of 1024**.
 
 `inotify_init1()` returns `EMFILE` — which Go renders with that same string —
 when the calling **uid** has exhausted its inotify instances. Every node in the
-fleet sits at the kernel default:
+fleet sat at the kernel default:
 
 ```
 fs.inotify.max_user_instances = 128     # 0004, 0005, 0006, 0024, 0029, 0043
@@ -52,11 +202,15 @@ and on 0004, uid 0 was already holding 138 inotify instances. Everything on
 these nodes runs as root, so every container's Kubernetes watchers, every log
 follower, every file watcher draws from that same pool of 128. The exporter
 is not special — it is whichever process happened to start after the pool ran
-dry. That is why the three deaths are weeks apart and look random: they are
-whichever node last restarted an exporter into an exhausted pool.
+dry. That is why the three deaths are weeks apart and look random.
 
-0029 and 0043 are healthy only because their exporters started earlier. They
-are one pod-churn away from the same failure.
+0029 and 0043 were healthy only because their exporters started earlier. They
+were one pod-churn away from the same failure.
+
+On 0004 the order was: the `gpuagent` worker wedged in the driver (fault 1),
+the exporter's calls to it started returning `DeadlineExceeded`, and at 17:37
+— one minute after the kernel's first hung-task report — the exporter died on
+inotify and stayed dead.
 
 ### Why nobody noticed
 
@@ -64,8 +218,8 @@ Two independent things had to go wrong, and both did.
 
 **The exporter container's PID 1 is a `bash` wrapper.** It starts `gpuagent`
 and the exporter as children. On 0004 the `gpuagent` child is a zombie
-(`State: Z`) and the `bash` wrapper is still sleeping. A container whose PID 1
-is alive is a Running container, no matter what died underneath it.
+(`State: Z`) and the `bash` wrapper is still sleeping in `do_wait`. A container
+whose PID 1 is alive is a Running container, no matter what died underneath it.
 
 **The DaemonSet has no readinessProbe and no livenessProbe.** Either one would
 have caught this the same minute it happened.
@@ -92,9 +246,11 @@ upgradePolicy`, and nothing for probes, resources or env.
 
 ### Fix
 
-**(a) The root cause — raise the inotify ceiling fleet-wide.** Nothing is
-restarted; raising a bound that nothing is near cannot disturb a running
-workload.
+**(a) The root cause — raise the inotify ceiling fleet-wide.** ✅ **applied
+2026-09-17.** All seven nodes went `128 → 8192` (`max_user_watches` →
+1048576), confirmed from the init-container logs and from the host `sysctl` on
+0004. Nothing was restarted; raising a bound that nothing is near cannot
+disturb a running workload.
 
 ```sh
 kubectl apply -k deploy/node-tuning
@@ -104,25 +260,28 @@ See [`deploy/node-tuning/inotify-limits.yaml`](../deploy/node-tuning/inotify-lim
 for the by-hand equivalent, which is the right form instead if node config is
 owned by a configuration management system that would revert a live change.
 
-**(b) Restart what already died.** The limit is what killed them; nothing
-retries on its own.
+**(b) Restart what already died.** ⚠️ **issued, cannot complete.** The delete
+was accepted and all three pods entered `Terminating`, where they remain:
 
-```sh
-kubectl -n kube-amd-gpu delete pod \
-  default-metrics-exporter-wj6pd \
-  default-metrics-exporter-nxt4l \
-  default-metrics-exporter-swrmm
+```
+FailedKillPod  error killing pod: failed to "KillContainer" ... DeadlineExceeded
+                                  failed to "KillPodSandbox" ... DeadlineExceeded
 ```
 
-Verify with `up{job="amd-gpu-exporter"}` — it should go to 5/5, and
-`AMDMetricsExporterDown` should clear.
+This is fault 1 blocking it. The container cannot be torn down while one of its
+tasks is wedged in `D` inside the driver, and the DaemonSet controller will not
+create a replacement until the old pod is gone. So
+`up{job="amd-gpu-exporter"}` stays at 2/5 and `AMDMetricsExporterDown`
+stays firing until those nodes are rebooted. The inotify fix is still what
+stops it happening again on 0024/0029/0043.
 
 **(c) The supervision gap stays open, so supervise it from outside.** Since
 neither a probe nor a working PID 1 can be had through the operator,
 `gpu-node-guard` takes it on: an exporter whose `/metrics` has been
 unreachable for longer than a threshold gets its pod deleted, rate-limited and
 with a Kubernetes Event, same guardrails as everything else the guard does.
-This is the one piece not yet built.
+Fault 1 is also the reason the guard must treat "deleted the pod" as *not*
+proof of recovery — it has to verify the replacement actually serves.
 
 **(d) Report upstream.** `rocm/device-metrics-exporter:v1.4.1` — PID 1 should
 exit when `gpuagent` dies, and the DaemonSet wants a readiness probe. Worth
@@ -130,7 +289,7 @@ filing regardless of what we do locally.
 
 ---
 
-## 2. Cluster DNS is broken for every pod
+## 3. Cluster DNS is broken for every pod
 
 ### What it looks like
 
@@ -184,6 +343,9 @@ each of our pods immune while leaving every other pod in the cluster broken,
 and it hard-codes a resolver address into application manifests.
 
 ### Fix
+
+**Not applied — the staged kubelet restart has not been authorised.** The
+workaround above stays in place until it is.
 
 On every node:
 

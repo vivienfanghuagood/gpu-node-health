@@ -64,7 +64,7 @@ spec:
           # address of the Harbor at 36.150.116.202:1808; every node's
           # containerd already trusts it over plain HTTP via
           # /etc/containerd/certs.d, so no node-level change is needed.
-          image: 10.5.10.12:1808/radeon-cloud-global/gpu-health-agent:0.1.0@sha256:d217b8539ceaceb280e4786c8193d68167484485d529c08ca6d4381efb0bdab5
+          image: 10.5.10.12:1808/radeon-cloud-global/gpu-health-agent:0.2.0@sha256:1a2881381b50b5153cc9f4cdcb043898953d6950640914a8fe7d9fff4362a9aa
           imagePullPolicy: IfNotPresent
           ports:
             - name: metrics
