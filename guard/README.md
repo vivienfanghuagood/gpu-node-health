@@ -94,7 +94,34 @@ the node goes on cooldown, and the unreachable clock keeps running until a
 scrape actually succeeds. Only a successful scrape clears it — not a restart,
 not a delete, not a `Running` phase.
 
-## Before deploying
+## Deployed 2026-09-17, in `observe` mode
+
+Running on 0024 from `deploy/guard-dev` (ConfigMap-mounted source on
+`python:3.12-slim` — same validation mechanism as the agent's dev overlay, and
+the same caveat: no provenance, no digest, not the production path). The
+production path is `Dockerfile.guard` built and pushed to Harbor, which has to
+happen on 0004 and so is waiting on 0004.
+
+What the first live runs found, all of it fixed in place:
+
+| Symptom | Cause |
+|---|---|
+| `415 UnsupportedMediaType` creating the Lease | `Content-Type` was only set when a caller passed one, and the POST call sites did not |
+| `400`, `parsing time "…Z" as ".000000"` | Lease timestamps are `metav1.MicroTime`; six fractional digits are **required**, not optional |
+| `exported_pod` appearing in VictoriaMetrics | the payload's `pod` label collided with the one the scrape config sets — renamed to `exporter_pod` |
+
+And what it got right unprompted: 0024 carries `GPUProbeFailed`, and the guard
+classified it `L1 report-only` and did not cordon — declining to take an 8-GPU
+node out of service over one card is the entire reason that level exists.
+Exporter supervision independently reported 0004/0005/0006 unreachable and
+0029/0043 fine, which is the same 2-of-5 picture `up{job="amd-gpu-exporter"}`
+shows, reached without being told.
+
+One property worth knowing: the unreachable clock lives in memory, so
+restarting the guard restarts every exporter's grace period. That errs toward
+not deleting, which is the direction it should err in.
+
+## Before enforcing
 
 `kubectl apply -k deploy/guard` creates a ServiceAccount with **`patch` on
 `nodes`**. That is the permission the whole manifest exists to request, and it

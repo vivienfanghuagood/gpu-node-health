@@ -283,3 +283,16 @@ def test_policy_never_emits_anything_but_cordon_or_noop():
 ])
 def test_parse_time(value, expected):
     assert parse_time(value) == expected
+
+
+def test_parse_time_accepts_microtime():
+    """Lease renewTime is metav1.MicroTime, Node conditions are metav1.Time.
+
+    Both have to round-trip through the same parser, and the fraction is
+    dropped rather than rejected - a guard that could not read back its own
+    Lease would stand down forever, which is how the first live run behaved.
+    """
+    from gpu_node_guard.k8s import rfc3339_micro
+    assert parse_time("2026-09-17T10:00:00.123456Z") == 1789639200
+    assert parse_time(rfc3339_micro(1789639200)) == 1789639200
+    assert rfc3339_micro(1789639200).endswith(".000000Z")

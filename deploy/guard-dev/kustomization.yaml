@@ -1,0 +1,23 @@
+# Validation overlay for gpu-node-guard.
+#
+# Runs the guard from source mounted out of a ConfigMap on top of the
+# python:3.12-slim image already present on every node, instead of a
+# purpose-built image. Same trade as deploy/dev, and the same warning applies:
+# ConfigMap-mounted source has no provenance, no immutable digest and no way to
+# roll back to a known build, so this is NOT the production mechanism.
+#
+# It is what is available today: pushing a real image requires building on
+# 0004, which is currently off limits.
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+# No global `namespace:` - it would rewrite the kube-amd-gpu Role for exporter
+# supervision into gpu-node-health and silently cost the guard that permission.
+# Every manifest carries its own.
+resources:
+  - ../guard
+  - guard-source-configmap.yaml
+patches:
+  - path: patch-run-from-source.yaml
+    target:
+      kind: Deployment
+      name: gpu-node-guard

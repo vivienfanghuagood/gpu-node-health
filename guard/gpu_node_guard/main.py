@@ -26,7 +26,7 @@ import urllib.request
 
 from . import metrics, policy
 from .config import Config
-from .k8s import K8sClient, K8sError, parse_time, rfc3339
+from .k8s import K8sClient, K8sError, parse_time, rfc3339_micro
 from .supervisor import DELETE, ExporterSupervisor
 
 log = logging.getLogger("gpu-node-guard")
@@ -72,9 +72,9 @@ class Leader:
 
             if holder != self._identity:
                 spec["holderIdentity"] = self._identity
-                spec["acquireTime"] = rfc3339(now)
+                spec["acquireTime"] = rfc3339_micro(now)
             spec["leaseDurationSeconds"] = self._cfg.LEASE_DURATION_SECONDS
-            spec["renewTime"] = rfc3339(now)
+            spec["renewTime"] = rfc3339_micro(now)
             self._client.update_lease(ns, name, lease)
             self.is_leader = True
             return True

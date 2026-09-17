@@ -1,0 +1,36 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: gpu-node-guard
+spec:
+  template:
+    spec:
+      containers:
+        - name: guard
+          # python:3.12-slim is already in containerd on every node here, and
+          # the guard has zero third-party dependencies, so 50KB of source in
+          # a ConfigMap is the entire payload. The alternative - building and
+          # pushing a real image - has to happen on 0004, which is off limits.
+          image: docker.io/library/python:3.12-slim
+          imagePullPolicy: IfNotPresent
+          workingDir: /app
+          command: ["python", "-m", "gpu_node_guard.main"]
+          env:
+            - name: PYTHONPATH
+              value: /app
+            - name: PYTHONDONTWRITEBYTECODE
+              value: "1"
+            - name: PYTHONUNBUFFERED
+              value: "1"
+          volumeMounts:
+            # Straight in as the package directory. The agent's overlay needs
+            # two ConfigMaps and an init container because its `signals`
+            # subpackage would have to be mounted INSIDE a read-only ConfigMap
+            # volume; the guard's package is flat, so none of that applies.
+            - name: src
+              mountPath: /app/gpu_node_guard
+              readOnly: true
+      volumes:
+        - name: src
+          configMap:
+            name: gpu-node-guard-src

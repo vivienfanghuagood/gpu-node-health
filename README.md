@@ -19,7 +19,7 @@ The guiding rule for everything here: **silence must never read as health.**
 | telemetry stack | vmagent / vmalert / Alertmanager / KSM / node-exporter | deployed, see [deploy/telemetry](deploy/telemetry/) |
 | dashboards | Grafana, folder "GPU Health" | provisioned and serving at `:30091` |
 | node tuning | DaemonSet, fleet-wide | applied — all 7 nodes 128 → 8192 inotify instances |
-| `gpu-node-guard` | Deployment, leader-elected | written, observe mode, **not deployed** — needs `patch` on nodes approved, see [guard/](guard/) |
+| `gpu-node-guard` | Deployment, leader-elected | **deployed 2026-09-17, `observe` mode** on 0024 via the dev overlay — cannot go `enforce` until alerts have somewhere to go, see [guard/](guard/) |
 
 The agent only observes and reports. Cordoning lives in the guard, a separate
 process with a separate ServiceAccount, so a bug in signal collection cannot

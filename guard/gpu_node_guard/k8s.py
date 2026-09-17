@@ -27,21 +27,39 @@ class K8sError(Exception):
 def parse_time(value):
     """RFC3339 -> epoch seconds, or None.
 
-    Kubernetes always emits UTC with a trailing Z for these fields, so this
-    handles that shape and refuses anything else rather than guessing. Callers
-    treat None as "no usable timestamp", which makes a condition ineligible to
-    trigger - failing closed, not open.
+    Kubernetes emits UTC with a trailing Z for these fields, in two flavours:
+    `metav1.Time` has second precision (Node conditions) and `metav1.MicroTime`
+    carries six fractional digits (Lease renewTime). Both are accepted; the
+    fraction is dropped, since nothing here cares about sub-second ages.
+
+    Anything else returns None, and callers treat None as "no usable
+    timestamp" - which makes a condition ineligible to trigger. Failing closed,
+    not open.
     """
     if not value or not isinstance(value, str):
         return None
+    head = value.split(".", 1)[0]
+    if not head.endswith("Z"):
+        head += "Z"
     try:
-        return calendar.timegm(time.strptime(value, "%Y-%m-%dT%H:%M:%SZ"))
+        return calendar.timegm(time.strptime(head, "%Y-%m-%dT%H:%M:%SZ"))
     except (ValueError, TypeError):
         return None
 
 
 def rfc3339(ts):
     return time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(ts))
+
+
+def rfc3339_micro(ts):
+    """The `metav1.MicroTime` wire format, for Lease acquireTime/renewTime.
+
+    Those two fields are MicroTime, not Time, and the API server parses them
+    with a layout that REQUIRES the six fractional digits - a plain
+    second-precision stamp is rejected with a 400, not coerced. Found the hard
+    way on the first live run.
+    """
+    return time.strftime("%Y-%m-%dT%H:%M:%S", time.gmtime(ts)) + ".000000Z"
 
 
 class K8sClient:
@@ -68,8 +86,14 @@ class K8sClient:
         req = urllib.request.Request(url, data=data, method=method)
         req.add_header("Authorization", f"Bearer {self._token}")
         req.add_header("Accept", "application/json")
-        if content_type:
-            req.add_header("Content-Type", content_type)
+        if data is not None:
+            # Any request with a body needs this. The API server rejects a
+            # bodied request with no Content-Type as 415 UnsupportedMediaType,
+            # which is how the first live run failed: the PATCH calls passed
+            # one explicitly and the POSTs did not, so leader election could
+            # never create its Lease. Defaulting here means a new call site
+            # cannot repeat that.
+            req.add_header("Content-Type", content_type or "application/json")
         try:
             with urllib.request.urlopen(req, timeout=timeout, context=self._ctx) as resp:
                 return json.loads(resp.read().decode() or "{}")
@@ -162,8 +186,8 @@ class K8sClient:
             "spec": {
                 "holderIdentity": holder,
                 "leaseDurationSeconds": duration,
-                "acquireTime": rfc3339(now),
-                "renewTime": rfc3339(now),
+                "acquireTime": rfc3339_micro(now),
+                "renewTime": rfc3339_micro(now),
             },
         }
         return self._request(

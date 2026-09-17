@@ -322,10 +322,12 @@ groups:
           summary: "gpu-node-guard cannot record Kubernetes Events - its actions and refusals are going unwitnessed"
 
       - alert: GPUGuardExporterUnreachable
-        expr: max by (pod, node) (gpuguard_exporter_unreachable_seconds) > 900
+        # exporter_pod, not pod: `pod` on this series is the guard's own pod,
+        # set by the scrape config. See the comment in metrics.py.
+        expr: max by (exporter_pod, node) (gpuguard_exporter_unreachable_seconds) > 900
         for: 5m
         labels:
           severity: warning
         annotations:
-          summary: "{{ $labels.node }}: metrics-exporter {{ $labels.pod }} has not answered /metrics in over 15 minutes"
+          summary: "{{ $labels.node }}: metrics-exporter {{ $labels.exporter_pod }} has not answered /metrics in over 15 minutes"
           description: "The pod is very likely still 1/1 Running - it has neither a readiness nor a liveness probe. Only this counter distinguishes it from healthy."

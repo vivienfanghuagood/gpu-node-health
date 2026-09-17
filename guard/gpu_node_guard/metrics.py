@@ -110,7 +110,13 @@ def render(state):
         r.metric(
             "exporter_decision", 1,
             labels={
-                "pod": dec.pod,
+                # NOT "pod". The scrape config sets `pod` to the target being
+                # scraped - which is the GUARD's own pod - so a `pod` label in
+                # the payload collides and Prometheus silently renames ours to
+                # `exported_pod`. Seen live on the first scrape. Same trap F9
+                # recorded for `node` on the agent job; the fix is to never let
+                # a payload label share a name with a relabelled one.
+                "exporter_pod": dec.pod,
                 "node": dec.node,
                 "action": dec.action,
                 "reason": dec.reason,
@@ -119,7 +125,7 @@ def render(state):
         )
         r.metric(
             "exporter_unreachable_seconds", dec.unreachable_seconds,
-            labels={"pod": dec.pod, "node": dec.node},
+            labels={"exporter_pod": dec.pod, "node": dec.node},
             help_text="How long this exporter's /metrics has been "
                       "unreachable. Reset only by a successful scrape - never "
                       "by a restart or a delete.",
