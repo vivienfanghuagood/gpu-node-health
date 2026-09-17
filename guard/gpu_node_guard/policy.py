@@ -65,6 +65,7 @@ R_REPORT_ONLY = "report-only-level"
 R_TOO_YOUNG = "condition-too-young"
 R_STALE_DATA = "health-data-stale"
 R_OBSERVE_MODE = "observe-mode"
+R_OUT_OF_SCOPE = "not-in-enforce-scope"
 R_CAPACITY_FLOOR = "capacity-floor"
 R_RATE_LIMIT = "rate-limit"
 R_CORDON = "cordon"
@@ -239,6 +240,22 @@ def decide(nodes, now, cfg, parse_time, recent_cordons=()):
                 NOOP, R_OBSERVE_MODE,
                 f"WOULD CORDON {name}: {ctype} active and every guardrail "
                 f"passed. GUARD_MODE is observe, so nothing was done. ({cmsg})",
+            ))
+            continue
+
+        # Scope is checked after the mode and after every guardrail, so a node
+        # outside it produces the same complete dry-run record as observe mode
+        # does - same guardrails evaluated, same "would have" finding, just a
+        # different reason for the inaction. Checking it earlier would hide
+        # whether the capacity floor or the rate limit would also have stopped
+        # this, which is precisely what a staged rollout needs to know before
+        # widening the scope.
+        if cfg.enforce_nodes and name not in cfg.enforce_nodes:
+            decisions.append(d(
+                NOOP, R_OUT_OF_SCOPE,
+                f"WOULD CORDON {name}: {ctype} active and every guardrail "
+                f"passed, and GUARD_MODE is enforce - but {name} is not in "
+                f"GUARD_ENFORCE_NODES, so nothing was done. ({cmsg})",
             ))
             continue
 

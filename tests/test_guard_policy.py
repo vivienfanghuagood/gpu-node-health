@@ -23,6 +23,7 @@ NOW = 1_758_000_000
 def cfg(**over):
     base = dict(
         mode="enforce",
+        enforce_nodes=(),
         condition_min_age_seconds=120,
         min_healthy_nodes=1,
         max_cordons_per_window=1,
@@ -322,3 +323,62 @@ def test_an_empty_involved_namespace_is_treated_the_same_as_a_missing_one():
 def test_namespaced_objects_keep_their_own_namespace():
     involved = {"kind": "Pod", "name": "exporter-x", "namespace": "kube-amd-gpu"}
     assert K8sClient.event_namespace(involved, "gpu-node-health") == "kube-amd-gpu"
+
+
+# --- enforce scope -----------------------------------------------------------
+# GUARD_ENFORCE_NODES narrows enforce to a named set, so the stress node can be
+# cordoned for real while the two serving nodes structurally cannot be. This is
+# deliberately NOT expressed by lowering the capacity floor: the floor is one
+# number for the whole fleet, so the only floor low enough to let 0024 through
+# also unprotects 0029 and 0043.
+
+
+def test_a_node_outside_the_enforce_scope_is_not_cordoned():
+    nodes = [node("0029", {policy.GPU_UNRECOVERABLE: "True"}), node("0024"),
+             node("0043")]
+    d = only(policy.decide(nodes, NOW, cfg(enforce_nodes=("0024",)), parse_time),
+             "0029")
+    assert d.action == policy.NOOP
+    assert d.reason == policy.R_OUT_OF_SCOPE
+
+
+def test_a_node_inside_the_enforce_scope_is_cordoned():
+    nodes = [node("0024", {policy.GPU_UNRECOVERABLE: "True"}), node("0029"),
+             node("0043")]
+    d = only(policy.decide(nodes, NOW, cfg(enforce_nodes=("0024",)), parse_time),
+             "0024")
+    assert d.action == policy.CORDON
+
+
+def test_an_empty_scope_means_every_node_because_enforce_must_mean_enforce():
+    """A mode that claims to act and silently does not is the failure this
+    whole project exists to remove. Empty is 'no restriction', not 'nothing'."""
+    nodes = [node("0029", {policy.GPU_UNRECOVERABLE: "True"}), node("0024"),
+             node("0043")]
+    d = only(policy.decide(nodes, NOW, cfg(enforce_nodes=()), parse_time), "0029")
+    assert d.action == policy.CORDON
+
+
+def test_out_of_scope_still_reports_the_would_have_finding():
+    """The dry-run record has to survive a staged rollout. A node the rollout
+    has not reached yet is exactly the node still relying on this alert."""
+    nodes = [node("0029", {policy.GPU_UNRECOVERABLE: "True"}), node("0024"),
+             node("0043")]
+    d = only(policy.decide(nodes, NOW, cfg(enforce_nodes=("0024",)), parse_time),
+             "0029")
+    assert d.message.startswith("WOULD CORDON")
+
+
+def test_scope_is_checked_after_the_guardrails_not_before():
+    """Out-of-scope must not mask a guardrail that would ALSO have refused.
+    Knowing the floor would have stopped it is the thing you need before you
+    widen the scope to include it."""
+    nodes = [node("0029", {policy.GPU_WORKQUEUE_STALLED: "True"}), node("0043")]
+    d = only(
+        policy.decide(
+            nodes, NOW, cfg(enforce_nodes=("0024",), min_healthy_nodes=2),
+            parse_time,
+        ),
+        "0029",
+    )
+    assert d.reason == policy.R_CAPACITY_FLOOR

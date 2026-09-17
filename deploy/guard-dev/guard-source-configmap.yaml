@@ -44,6 +44,21 @@ data:
         # silent-removal failure the "摘除必告警" guardrail exists to prevent.
         MODE = os.getenv("GUARD_MODE", "observe").strip().lower()
     
+        # Restrict enforce to an explicit set of nodes. Empty (the default) means
+        # every watched node, so `enforce` still means enforce - a mode that claims
+        # to act and silently does not would be this project's own failure mode.
+        #
+        # This exists because the capacity floor cannot express "enforce on the
+        # stress node only". The floor is a number, and on this cluster lowering it
+        # far enough to let 0024 be cordoned also unprotects 0029 and 0043, which
+        # are the entire serving capacity. Scope and capacity are different
+        # questions and conflating them costs the wrong answer to both. A node
+        # outside the scope is reported exactly as observe mode would report it,
+        # under its own reason, so the dry-run record stays complete.
+        ENFORCE_NODES = tuple(
+            n.strip() for n in os.getenv("GUARD_ENFORCE_NODES", "").split(",") if n.strip()
+        )
+    
         # --- what it watches ----------------------------------------------------
         # Same label the agent rolls out on, so the guard's view and the agent's
         # deployment can never drift apart: a node without an agent has no GPU
@@ -111,6 +126,7 @@ data:
         def policy(cls):
             return _PolicyConfig(
                 mode=cls.MODE,
+                enforce_nodes=cls.ENFORCE_NODES,
                 condition_min_age_seconds=cls.CONDITION_MIN_AGE_SECONDS,
                 min_healthy_nodes=cls.MIN_HEALTHY_NODES,
                 max_cordons_per_window=cls.MAX_CORDONS_PER_WINDOW,
@@ -121,6 +137,7 @@ data:
     class _PolicyConfig:
         __slots__ = (
             "mode",
+            "enforce_nodes",
             "condition_min_age_seconds",
             "min_healthy_nodes",
             "max_cordons_per_window",
@@ -899,6 +916,7 @@ data:
     R_TOO_YOUNG = "condition-too-young"
     R_STALE_DATA = "health-data-stale"
     R_OBSERVE_MODE = "observe-mode"
+    R_OUT_OF_SCOPE = "not-in-enforce-scope"
     R_CAPACITY_FLOOR = "capacity-floor"
     R_RATE_LIMIT = "rate-limit"
     R_CORDON = "cordon"
@@ -1073,6 +1091,22 @@ data:
                     NOOP, R_OBSERVE_MODE,
                     f"WOULD CORDON {name}: {ctype} active and every guardrail "
                     f"passed. GUARD_MODE is observe, so nothing was done. ({cmsg})",
+                ))
+                continue
+    
+            # Scope is checked after the mode and after every guardrail, so a node
+            # outside it produces the same complete dry-run record as observe mode
+            # does - same guardrails evaluated, same "would have" finding, just a
+            # different reason for the inaction. Checking it earlier would hide
+            # whether the capacity floor or the rate limit would also have stopped
+            # this, which is precisely what a staged rollout needs to know before
+            # widening the scope.
+            if cfg.enforce_nodes and name not in cfg.enforce_nodes:
+                decisions.append(d(
+                    NOOP, R_OUT_OF_SCOPE,
+                    f"WOULD CORDON {name}: {ctype} active and every guardrail "
+                    f"passed, and GUARD_MODE is enforce - but {name} is not in "
+                    f"GUARD_ENFORCE_NODES, so nothing was done. ({cmsg})",
                 ))
                 continue
     

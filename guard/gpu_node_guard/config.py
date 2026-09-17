@@ -36,6 +36,21 @@ class Config:
     # silent-removal failure the "摘除必告警" guardrail exists to prevent.
     MODE = os.getenv("GUARD_MODE", "observe").strip().lower()
 
+    # Restrict enforce to an explicit set of nodes. Empty (the default) means
+    # every watched node, so `enforce` still means enforce - a mode that claims
+    # to act and silently does not would be this project's own failure mode.
+    #
+    # This exists because the capacity floor cannot express "enforce on the
+    # stress node only". The floor is a number, and on this cluster lowering it
+    # far enough to let 0024 be cordoned also unprotects 0029 and 0043, which
+    # are the entire serving capacity. Scope and capacity are different
+    # questions and conflating them costs the wrong answer to both. A node
+    # outside the scope is reported exactly as observe mode would report it,
+    # under its own reason, so the dry-run record stays complete.
+    ENFORCE_NODES = tuple(
+        n.strip() for n in os.getenv("GUARD_ENFORCE_NODES", "").split(",") if n.strip()
+    )
+
     # --- what it watches ----------------------------------------------------
     # Same label the agent rolls out on, so the guard's view and the agent's
     # deployment can never drift apart: a node without an agent has no GPU
@@ -103,6 +118,7 @@ class Config:
     def policy(cls):
         return _PolicyConfig(
             mode=cls.MODE,
+            enforce_nodes=cls.ENFORCE_NODES,
             condition_min_age_seconds=cls.CONDITION_MIN_AGE_SECONDS,
             min_healthy_nodes=cls.MIN_HEALTHY_NODES,
             max_cordons_per_window=cls.MAX_CORDONS_PER_WINDOW,
@@ -113,6 +129,7 @@ class Config:
 class _PolicyConfig:
     __slots__ = (
         "mode",
+        "enforce_nodes",
         "condition_min_age_seconds",
         "min_healthy_nodes",
         "max_cordons_per_window",

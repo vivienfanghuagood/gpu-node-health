@@ -303,7 +303,14 @@ groups:
         # reason="observe-mode" is what policy.decide actually emits. This rule
         # previously matched "would-cordon", a constant no code path ever
         # produced, so it could never fire - see the note in policy.py.
-        expr: max by (node, condition) (gpuguard_decision{reason="observe-mode"}) > 0
+        #
+        # not-in-enforce-scope is the same finding reached a different way: every
+        # guardrail passed and the mode IS enforce, but the node is outside
+        # GUARD_ENFORCE_NODES. Both are "this node would have been cordoned",
+        # and leaving the second one out would reopen exactly the hole the
+        # first comment describes, on the nodes a staged rollout has not
+        # reached yet - which are the ones still relying on this alert.
+        expr: max by (node, condition) (gpuguard_decision{reason=~"observe-mode|not-in-enforce-scope"}) > 0
         for: 5m
         labels:
           severity: warning
