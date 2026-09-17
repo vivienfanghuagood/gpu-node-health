@@ -1,0 +1,115 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: vmagent
+  namespace: amd-telemetry
+  labels:
+    app: vmagent
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: vmagent
+  strategy:
+    # Recreate, not RollingUpdate: two vmagents scraping the same targets
+    # would double-write every sample during the overlap.
+    type: Recreate
+  template:
+    metadata:
+      labels:
+        app: vmagent
+    spec:
+      serviceAccountName: vmagent
+      # This cluster's kubelets are configured with clusterDNS 10.232.0.10
+      # while the kube-dns Service actually lives at 10.233.0.10, so service
+      # DNS is broken for every pod in the cluster - kubernetes.default does
+      # not resolve. Fixing that means editing kubelet config and restarting
+      # kubelet on every node, which is not this component's call to make.
+      # Pointing this one pod at the real resolver is a local workaround, and
+      # it is a workaround: when the kubelet config is fixed, delete these two
+      # stanzas rather than leaving a hardcoded DNS address behind.
+      dnsPolicy: None
+      dnsConfig:
+        nameservers: ["10.233.0.10"]
+        searches:
+          - amd-telemetry.svc.amd.gpu.dc
+          - svc.amd.gpu.dc
+          - amd.gpu.dc
+        options:
+          - name: ndots
+            value: "5"
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+        runAsGroup: 1000
+        fsGroup: 1000
+      containers:
+        - name: vmagent
+          image: 10.5.10.12:1808/radeon-cloud-global/vmagent:v1.106.1@sha256:ac318a495b3c6cf1e49483869825a84a415d861375b74ac9d20db544ce48fdb4
+          imagePullPolicy: IfNotPresent
+          args:
+            - -promscrape.config=/config/scrape.yaml
+            - -remoteWrite.url=http://victoria-metrics.amd-telemetry.svc.amd.gpu.dc:8428/api/v1/write
+            - -remoteWrite.tmpDataPath=/vmagent-data
+            # Bound the on-disk buffer so a long VictoriaMetrics outage cannot
+            # fill the node's disk. Past this, the oldest samples are dropped:
+            # losing old samples beats taking the node down.
+            - -remoteWrite.maxDiskUsagePerURL=512MB
+            - -httpListenAddr=:8429
+          ports:
+            - name: http
+              containerPort: 8429
+          resources:
+            requests:
+              cpu: 50m
+              memory: 128Mi
+            limits:
+              # No CPU limit on purpose: a throttled collector reports stale
+              # data during exactly the load spike you deployed it to observe.
+              memory: 512Mi
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: http
+            initialDelaySeconds: 15
+            periodSeconds: 20
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: http
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          volumeMounts:
+            - name: config
+              mountPath: /config
+              readOnly: true
+            - name: data
+              mountPath: /vmagent-data
+      volumes:
+        - name: config
+          configMap:
+            name: vmagent-scrape-config
+        - name: data
+          emptyDir:
+            sizeLimit: 1Gi
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: vmagent
+  namespace: amd-telemetry
+  labels:
+    app: vmagent
+spec:
+  type: ClusterIP
+  selector:
+    app: vmagent
+  ports:
+    - name: http
+      port: 8429
+      targetPort: http

@@ -1,0 +1,37 @@
+# vmagent lives next to the VictoriaMetrics it writes to, in amd-telemetry.
+# That namespace already exists and is owned by the telemetry stack, so it is
+# deliberately NOT declared here - applying this overlay must never be able to
+# recreate or relabel someone else's namespace.
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: vmagent
+  namespace: amd-telemetry
+---
+# Read-only, cluster-wide, and nothing else. vmagent discovers scrape targets
+# and never writes: the whole point of the collection layer is that it cannot
+# perturb the cluster it is measuring.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: vmagent
+rules:
+  - apiGroups: [""]
+    resources: ["pods", "services", "endpoints", "nodes"]
+    verbs: ["get", "list", "watch"]
+  - apiGroups: ["discovery.k8s.io"]
+    resources: ["endpointslices"]
+    verbs: ["get", "list", "watch"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: vmagent
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: vmagent
+subjects:
+  - kind: ServiceAccount
+    name: vmagent
+    namespace: amd-telemetry

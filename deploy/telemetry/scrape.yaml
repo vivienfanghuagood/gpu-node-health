@@ -1,0 +1,68 @@
+# The gap this closes: VictoriaMetrics in this cluster runs with
+# -storageDataPath, -retentionPeriod and -httpListenAddr and nothing else.
+# It is a pure push target and has never scraped anything. The AMD metrics
+# exporter has been serving ~691 metric lines per node since the day it was
+# deployed, and no one was on the other end of the wire. That is the exact
+# mechanism behind "the health data chain was never established".
+global:
+  scrape_interval: 30s
+  scrape_timeout: 10s
+  external_labels:
+    cluster: wx-ms-w7900d
+
+scrape_configs:
+  # ---------------------------------------------------------------
+  - job_name: gpu-health-agent
+    # Faster than the global default: this is the incident-detection
+    # signal. The agent itself collects every 15s, so scraping slower
+    # would throw away resolution we already paid for.
+    scrape_interval: 15s
+    kubernetes_sd_configs:
+      - role: pod
+        namespaces:
+          names: [gpu-node-health]
+    relabel_configs:
+      - source_labels: [__meta_kubernetes_pod_label_app_kubernetes_io_name]
+        regex: gpu-health-agent
+        action: keep
+      - source_labels: [__meta_kubernetes_pod_container_port_name]
+        regex: metrics
+        action: keep
+      - source_labels: [__meta_kubernetes_pod_name]
+        target_label: pod
+      # No `node` target_label here on purpose. The agent already stamps
+      # node= on every sample from its own downward-API NODE_NAME. Adding
+      # it again from service discovery would collide and vmagent would
+      # rename one of them to exported_node, quietly splitting every query.
+
+  # ---------------------------------------------------------------
+  - job_name: amd-gpu-exporter
+    kubernetes_sd_configs:
+      - role: pod
+        namespaces:
+          names: [kube-amd-gpu]
+    relabel_configs:
+      - source_labels: [__meta_kubernetes_pod_label_app_kubernetes_io_name]
+        regex: metrics-exporter
+        action: keep
+      - source_labels: [__meta_kubernetes_pod_container_port_name]
+        regex: exporter-port
+        action: keep
+      # Scraped per-pod, never through the default-metrics-exporter
+      # Service: that Service is a plain ClusterIP over five non-hostNetwork
+      # pods on five nodes, so scraping it would round-robin and attribute
+      # one node's GPUs to another.
+      - source_labels: [__meta_kubernetes_pod_node_name]
+        target_label: node
+      # Deliberately NOT relabelling pod/namespace/container. The exporter
+      # emits those labels itself to name the TENANT sitting on each GPU
+      # (gpu_health{namespace="shared-model-serving",pod="minicpm5-..."}),
+      # which is what makes an alert say who is affected. Overwriting them
+      # with the exporter's own pod identity would destroy that.
+
+  # ---------------------------------------------------------------
+  - job_name: vmagent
+    # Self-scrape. If collection breaks, the absence of these series is
+    # what tells us - silence must never read as health.
+    static_configs:
+      - targets: ["127.0.0.1:8429"]

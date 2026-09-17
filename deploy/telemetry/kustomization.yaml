@@ -1,0 +1,19 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+# No global `namespace:` transformer here, same reason as deploy/base: it
+# rewrites resources that deliberately live in another namespace. Every
+# manifest carries its own.
+resources:
+  - vmagent-rbac.yaml
+  - vmagent-deployment.yaml
+
+# Hash-suffixed, so editing scrape.yaml produces a new ConfigMap name and
+# rolls the Deployment. vmagent does not watch its config file, and a config
+# that changed on disk while the process kept running the old one is the
+# quietest way to believe you are collecting something you are not.
+configMapGenerator:
+  - name: vmagent-scrape-config
+    namespace: amd-telemetry
+    files:
+      - scrape.yaml
