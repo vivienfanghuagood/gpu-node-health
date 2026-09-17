@@ -26,7 +26,8 @@
 
 | 检查 | 结果 |
 |---|---|
-| `uname -r` | `6.14.14`，三台 worker 一致（0043 的 6.16.6 是**用户态 ROCm** 版本漂移，见 A5） |
+| `uname -r` | `6.8.0-79-generic`，三台 worker 一致 |
+| `amdgpu` 模块版本 | 0024 `6.14.14` / 0029 `6.14.14` / 0043 `6.16.6` —— **三台各不相同**，见 F19。本表初版把 `6.14.14` 写成了内核版本，那是 amdgpu DKMS 模块版本，不是 `uname -r` |
 | `modinfo amdgpu` srcversion | `4B692E1E808F34CA3FC4555`，与发行版原版一致 |
 | 模块参数 | 100 个，逐个比对全部为上游参数，无补丁新增项 |
 | D1–D7 sysfs 计数器 | **0 个**。`d4_watchdog_fired_total` / `d1_remediate_fences_total` / `ttm_delete_giveup_total` / `d3_failover_total` 均不存在 |
