@@ -148,6 +148,40 @@ def healthy_capacity(nodes, now, min_age_seconds, parse_time, exclude=()):
     return count
 
 
+NodeState = collections.namedtuple("NodeState", "node unschedulable ready")
+
+
+def node_states(nodes):
+    """Schedulability and readiness per node - facts, not decisions.
+
+    This is separate from `decide` on purpose. A decision describes what the
+    guard wants to do *right now*, and it is driven by the conditions, which
+    expire on a 15-minute activity window. A cordon does not expire: this guard
+    never uncordons, by design. So the moment the condition clears, the node's
+    decision goes back to `healthy` while the node is still out of service, and
+    the only alert that ever mentioned it was an `increase(cordons_total[10m])`
+    that resolved long before.
+
+    Measured on 0024 2026-09-17: cordoned 07:46:28, condition cleared 07:59:12,
+    decision back to `healthy` at 07:59:28, node still unschedulable. Thirteen
+    minutes from removing a node from service to nothing anywhere saying so.
+
+    That is this project's founding failure mode - silence reading as health -
+    except the missing capacity is now our own doing, which makes it worse
+    rather than better. A permanent action needs a standing signal, not an
+    edge-triggered one.
+    """
+    out = []
+    for node in nodes:
+        name = (node.get("metadata") or {}).get("name", "")
+        out.append(NodeState(
+            name,
+            0 if _schedulable(node) else 1,
+            1 if _ready(node) else 0,
+        ))
+    return out
+
+
 def decide(nodes, now, cfg, parse_time, recent_cordons=()):
     """Return a Decision for every node in `nodes`.
 

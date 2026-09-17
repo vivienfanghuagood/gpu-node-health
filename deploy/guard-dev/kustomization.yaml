@@ -21,3 +21,9 @@ patches:
     target:
       kind: Deployment
       name: gpu-node-guard
+  # Scoped enforce for the 0024 stress campaign. Read the header of this file
+  # before widening it - the scope is the guardrail, not a convenience.
+  - path: patch-enforce-0024.yaml
+    target:
+      kind: Deployment
+      name: gpu-node-guard

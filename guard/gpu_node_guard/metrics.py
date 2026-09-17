@@ -90,6 +90,26 @@ def render(state):
         help_text="Cordons actually performed by this guard since start.",
     )
 
+    # Standing facts about each watched node, published separately from the
+    # decisions. A cordon is permanent (this guard never uncordons) while a
+    # decision follows the conditions, which expire - so once the condition
+    # clears, the node reads `healthy` while still being out of service. These
+    # two series are the only thing that keeps saying so.
+    for st in state.get("node_states", ()):
+        r.metric(
+            "node_unschedulable", st.unschedulable, labels={"node": st.node},
+            help_text="1 while the node is cordoned, whoever cordoned it. This "
+                      "guard never uncordons, so a 1 here persists until a "
+                      "human clears it - which is exactly why it is a gauge "
+                      "and not an increase() over the cordon counter.",
+        )
+        r.metric(
+            "node_ready", st.ready, labels={"node": st.node},
+            help_text="kubelet's own Ready condition. Stays 1 through a GPU "
+                      "hang - recorded here so a dashboard can show that next "
+                      "to the GPU conditions rather than beside them.",
+        )
+
     for dec in state.get("decisions", ()):
         r.metric(
             "decision", 1,

@@ -125,6 +125,7 @@ def test_every_gpuguard_metric_a_rule_uses_is_one_the_guard_renders():
         "exporter_decisions": [
             PodDecision("p", "n", "noop", "reachable", 0, "m")
         ],
+        "node_states": [policy.NodeState("n", 1, 1)],
     }
     rendered = set(
         re.findall(r"^(gpuguard_[a-z_]+)", metrics.render(state), re.M)
@@ -160,3 +161,47 @@ def test_exporter_unreachable_rule_does_not_use_the_colliding_pod_label():
                 f"{rule['alert']} groups an exporter series by `pod`, which is "
                 "the guard's own pod. Use exporter_pod."
             )
+
+
+def test_a_cordoned_node_is_still_reported_when_its_decision_reads_healthy():
+    """The standing signal has to outlive the condition that caused it.
+
+    This is the 0024 sequence of 2026-09-17 in test form: the node was cordoned,
+    the GPU condition expired on its 15-minute activity window, and the guard's
+    decision went back to `healthy` - while the node was still unschedulable and
+    still out of the serving pool. Every edge-triggered series had long since
+    resolved. Only a gauge on the node's actual schedulability keeps saying it.
+    """
+    node = {
+        "metadata": {"name": "wx-ms-w7900d-0024"},
+        "spec": {"unschedulable": True},
+        "status": {"conditions": [{"type": "Ready", "status": "True"}]},
+    }
+    healthy = policy.Decision(
+        "wx-ms-w7900d-0024", policy.NOOP, policy.R_HEALTHY, "", "", "m"
+    )
+    text = metrics.render({
+        "decisions": [healthy],
+        "node_states": policy.node_states([node]),
+    })
+
+    assert 'gpuguard_node_unschedulable{node="wx-ms-w7900d-0024"} 1' in text
+    assert policy.R_HEALTHY in text, "precondition: the decision does read healthy"
+
+
+def test_the_still_cordoned_rule_is_not_edge_triggered():
+    """A permanent action needs a standing signal, not an increase() window.
+
+    GPUGuardNodeCordoned announces the cordon and resolves ten minutes later.
+    If the rule that is supposed to keep reporting the missing capacity were
+    written the same way, the gap it exists to close would still be open - and
+    it would look closed, which is worse.
+    """
+    for group, rule in _rules():
+        if rule.get("alert") == "GPUNodeStillCordoned":
+            assert "increase(" not in rule["expr"] and "rate(" not in rule["expr"], (
+                "GPUNodeStillCordoned must read current state, not a delta"
+            )
+            assert "gpuguard_node_unschedulable" in rule["expr"]
+            return
+    raise AssertionError("GPUNodeStillCordoned rule is missing")

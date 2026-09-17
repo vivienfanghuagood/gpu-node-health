@@ -382,3 +382,51 @@ def test_scope_is_checked_after_the_guardrails_not_before():
         "0029",
     )
     assert d.reason == policy.R_CAPACITY_FLOOR
+
+
+# --- node states -------------------------------------------------------------
+# Facts, not decisions. Decisions follow the conditions, which expire; a cordon
+# does not, because this guard never uncordons. Without these the node goes
+# quiet the moment the condition clears, while still being out of service.
+
+def test_node_states_reports_a_cordoned_node_as_unschedulable():
+    node = {
+        "metadata": {"name": "a"},
+        "spec": {"unschedulable": True},
+        "status": {"conditions": [{"type": "Ready", "status": "True"}]},
+    }
+    (st,) = policy.node_states([node])
+    assert (st.node, st.unschedulable, st.ready) == ("a", 1, 1)
+
+
+def test_node_states_does_not_depend_on_gpu_conditions_expiring():
+    """The same node, before and after its GPU condition ages out.
+
+    The decision changes between these two; the node state must not, because
+    nothing uncordoned anything.
+    """
+    base = {
+        "metadata": {"name": "a"},
+        "spec": {"unschedulable": True},
+        "status": {"conditions": [{"type": "Ready", "status": "True"}]},
+    }
+    triggering = {
+        "metadata": {"name": "a"},
+        "spec": {"unschedulable": True},
+        "status": {"conditions": [
+            {"type": "Ready", "status": "True"},
+            {"type": policy.GPU_UNRECOVERABLE, "status": "True",
+             "lastTransitionTime": 0, "message": "m"},
+        ]},
+    }
+    assert policy.node_states([base]) == policy.node_states([triggering])
+
+
+def test_node_states_reports_a_not_ready_node():
+    node = {
+        "metadata": {"name": "a"},
+        "spec": {},
+        "status": {"conditions": [{"type": "Ready", "status": "False"}]},
+    }
+    (st,) = policy.node_states([node])
+    assert (st.unschedulable, st.ready) == (0, 0)

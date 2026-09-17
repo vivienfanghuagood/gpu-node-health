@@ -121,6 +121,7 @@ class Guard:
             "cordons_total": 0,
             "decisions": [],
             "exporter_decisions": [],
+            "node_states": [],
         }
 
     def snapshot(self):
@@ -219,6 +220,7 @@ class Guard:
                 "healthy_capacity": capacity,
                 "decisions": decisions,
                 "exporter_decisions": exporter_decisions,
+                "node_states": policy.node_states(nodes),
             })
             self._state["cordons_total"] += cordoned
 
@@ -276,6 +278,9 @@ def make_handler(guard):
                 dump["decisions"] = [d._asdict() for d in state["decisions"]]
                 dump["exporter_decisions"] = [
                     d._asdict() for d in state["exporter_decisions"]
+                ]
+                dump["node_states"] = [
+                    s._asdict() for s in state["node_states"]
                 ]
                 self._send(200, json.dumps(dump, indent=2, default=str),
                            "application/json")

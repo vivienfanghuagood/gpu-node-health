@@ -1,0 +1,41 @@
+# Enforce, scoped to the stress node only.
+#
+# This lives in the validation overlay and NOT in deploy/guard, which stays
+# GUARD_MODE=observe. The base is what a real rollout would apply; this file is
+# what the 2026-09-17 fault-injection campaign on 0024 needs, and the two should
+# not be the same document.
+#
+# It exists as a file rather than as `kubectl set env` because the running
+# cluster drifting from git is how a guard ends up enforcing on nodes nobody
+# remembers putting in scope. If it is worth doing it is worth being reviewable.
+#
+# Why the allowlist and not a lower capacity floor: the floor is one number for
+# the whole fleet. The only value low enough to let 0024 be cordoned also
+# unprotects 0029 and 0043, which are the entire serving capacity. Scope and
+# capacity are different questions - see the comment on ENFORCE_NODES in
+# config.py. A node outside the scope still gets a complete dry-run record under
+# reason="not-in-enforce-scope", and GPUGuardWouldHaveCordoned matches that too.
+#
+# This does NOT satisfy the plan's step 7. Fleet-wide enforce still requires,
+# unchanged:
+#   1. a full week of observe (started 2026-09-17),
+#   2. Alertmanager with a real receiver - "摘除必告警" is meaningless while
+#      alerts go to the noop receiver,
+#   3. platform sign-off on the SA holding patch on nodes (F7).
+# 0024 is exempt from (1) and (3) only because it is cordoned, carries no
+# tenants, and is the node the campaign is deliberately trying to break.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: gpu-node-guard
+  namespace: gpu-node-health
+spec:
+  template:
+    spec:
+      containers:
+        - name: guard
+          env:
+            - name: GUARD_MODE
+              value: "enforce"
+            - name: GUARD_ENFORCE_NODES
+              value: "wx-ms-w7900d-0024"

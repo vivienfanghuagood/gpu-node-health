@@ -519,6 +519,7 @@ data:
                 "cordons_total": 0,
                 "decisions": [],
                 "exporter_decisions": [],
+                "node_states": [],
             }
     
         def snapshot(self):
@@ -617,6 +618,7 @@ data:
                     "healthy_capacity": capacity,
                     "decisions": decisions,
                     "exporter_decisions": exporter_decisions,
+                    "node_states": policy.node_states(nodes),
                 })
                 self._state["cordons_total"] += cordoned
     
@@ -674,6 +676,9 @@ data:
                     dump["decisions"] = [d._asdict() for d in state["decisions"]]
                     dump["exporter_decisions"] = [
                         d._asdict() for d in state["exporter_decisions"]
+                    ]
+                    dump["node_states"] = [
+                        s._asdict() for s in state["node_states"]
                     ]
                     self._send(200, json.dumps(dump, indent=2, default=str),
                                "application/json")
@@ -805,6 +810,26 @@ data:
             "cordons_total", state.get("cordons_total", 0), mtype="counter",
             help_text="Cordons actually performed by this guard since start.",
         )
+    
+        # Standing facts about each watched node, published separately from the
+        # decisions. A cordon is permanent (this guard never uncordons) while a
+        # decision follows the conditions, which expire - so once the condition
+        # clears, the node reads `healthy` while still being out of service. These
+        # two series are the only thing that keeps saying so.
+        for st in state.get("node_states", ()):
+            r.metric(
+                "node_unschedulable", st.unschedulable, labels={"node": st.node},
+                help_text="1 while the node is cordoned, whoever cordoned it. This "
+                          "guard never uncordons, so a 1 here persists until a "
+                          "human clears it - which is exactly why it is a gauge "
+                          "and not an increase() over the cordon counter.",
+            )
+            r.metric(
+                "node_ready", st.ready, labels={"node": st.node},
+                help_text="kubelet's own Ready condition. Stays 1 through a GPU "
+                          "hang - recorded here so a dashboard can show that next "
+                          "to the GPU conditions rather than beside them.",
+            )
     
         for dec in state.get("decisions", ()):
             r.metric(
@@ -997,6 +1022,40 @@ data:
                 continue
             count += 1
         return count
+    
+    
+    NodeState = collections.namedtuple("NodeState", "node unschedulable ready")
+    
+    
+    def node_states(nodes):
+        """Schedulability and readiness per node - facts, not decisions.
+    
+        This is separate from `decide` on purpose. A decision describes what the
+        guard wants to do *right now*, and it is driven by the conditions, which
+        expire on a 15-minute activity window. A cordon does not expire: this guard
+        never uncordons, by design. So the moment the condition clears, the node's
+        decision goes back to `healthy` while the node is still out of service, and
+        the only alert that ever mentioned it was an `increase(cordons_total[10m])`
+        that resolved long before.
+    
+        Measured on 0024 2026-09-17: cordoned 07:46:28, condition cleared 07:59:12,
+        decision back to `healthy` at 07:59:28, node still unschedulable. Thirteen
+        minutes from removing a node from service to nothing anywhere saying so.
+    
+        That is this project's founding failure mode - silence reading as health -
+        except the missing capacity is now our own doing, which makes it worse
+        rather than better. A permanent action needs a standing signal, not an
+        edge-triggered one.
+        """
+        out = []
+        for node in nodes:
+            name = (node.get("metadata") or {}).get("name", "")
+            out.append(NodeState(
+                name,
+                0 if _schedulable(node) else 1,
+                1 if _ready(node) else 0,
+            ))
+        return out
     
     
     def decide(nodes, now, cfg, parse_time, recent_cordons=()):

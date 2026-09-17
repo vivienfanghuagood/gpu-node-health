@@ -324,6 +324,32 @@ groups:
         annotations:
           summary: "gpu-node-guard cordoned a node - capacity has dropped and no automatic uncordon will happen"
 
+      - alert: GPUNodeStillCordoned
+        # GPUGuardNodeCordoned above is edge-triggered - increase() over a 10m
+        # window - so it announces the cordon and then resolves. But this guard
+        # never uncordons, so the capacity stays gone long after the alert does.
+        # Worse, the GPU condition that caused the cordon expires on a 15-minute
+        # activity window, after which gpuguard_decision for that node reads
+        # `healthy` while the node is still unschedulable.
+        #
+        # Measured on 0024 2026-09-17: cordon 07:46:28, condition cleared
+        # 07:59:12, decision `healthy` 07:59:28. From then on nothing anywhere
+        # said a node was out of service. That is the failure this project
+        # exists to remove, with the twist that the missing capacity is our own
+        # doing. A permanent action needs a standing signal.
+        #
+        # This fires for as long as the node is cordoned and is meant to: on a
+        # fleet whose entire serving capacity is two nodes, "one node is
+        # deliberately out" is a fact an operator should have to keep
+        # acknowledging, not something that scrolls past once.
+        expr: max by (node) (gpuguard_node_unschedulable) > 0
+        for: 30m
+        labels:
+          severity: warning
+        annotations:
+          summary: "{{ $labels.node }} is cordoned and nothing will uncordon it automatically"
+          description: "Regression gating is deliberate: a node returns to service only after a human runs the smoke check. This alert is the reminder that it has not happened yet."
+
       - alert: GPUGuardEventsFailing
         expr: increase(gpuguard_event_errors_total[30m]) > 0
         labels:
