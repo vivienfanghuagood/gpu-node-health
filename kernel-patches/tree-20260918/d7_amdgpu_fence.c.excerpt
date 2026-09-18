@@ -1,0 +1,90 @@
+/*
+ * Verbatim excerpt from 0024:/usr/src/amdgpu-6.14.14-2226257.24.04/
+ *   amd/amdgpu/amdgpu_fence.c  (file mtime 2026-09-18 03:39,
+ *   built into amdgpu.ko 03:45, booted 03:47)
+ *
+ * Captured read-only on 2026-09-18T07:30Z. This is the D7 fence-reaping
+ * patch, which does not appear in incident-export-20260916/ - it is newer
+ * than every diff in that directory.
+ *
+ * Confirmed present in the loaded module:
+ *   zstdcat $(modinfo -n amdgpu) | strings | grep 'D7 reaped'
+ *     amdgpu: amdgpu ring %s: D7 reaped %d stranded fence(s) (hw past, unsignaled >%lums)
+ *   cat /sys/module/amdgpu/parameters/fence_reap_grace_ms
+ *     30000
+ *
+ * Fired 0 times as of 2026-09-18T07:30Z.
+ */
+
+/* D7: grace window before a hw-passed but unsignaled fence is declared
+ * stranded and error-completed (default 30s).
+ */
+static unsigned long d7_reap_grace_ms = 30000;
+module_param_named(fence_reap_grace_ms, d7_reap_grace_ms, ulong, 0644);
+MODULE_PARM_DESC(fence_reap_grace_ms,
+		 "D7: grace (ms) before reaping a stranded ring fence (default 30000)");
+
+/**
+ * amdgpu_fence_reap_stranded - error-complete provably stranded fences
+ * @ring: ring whose pending fences are scanned
+ *
+ * A fence whose seqno the engine has already passed (per the hw writeback)
+ * but that never signaled is stranded: its completion was lost (observed in
+ * the W7900D cluster incident: sdma rings emitting fences that never signal
+ * during eviction/teardown churn, while the same ring keeps serving later
+ * submissions). Left alone, it never signals and waiters park forever
+ * (IB pool entries, TTM delayed-delete workers), snowballing into
+ * node-level death.
+ *
+ * Conservative by construction: only a fence whose seqno is strictly behind
+ * the ring's current hardware progress AND older than the grace window is
+ * touched. A fence the engine may still reach is never reaped. Runs from
+ * the existing per-ring fallback timer (timer/atomic context; no sleeping).
+ */
+static void amdgpu_fence_reap_stranded(struct amdgpu_ring *ring)
+{
+	struct amdgpu_fence_driver *drv = &ring->fence_drv;
+	struct dma_fence *stranded[32];
+	uint32_t hw_seq;
+	ktime_t now;
+	unsigned long flags;
+	int i, n = 0;
+
+	hw_seq = amdgpu_fence_read(ring);
+	now = ktime_get();
+
+	spin_lock_irqsave(&drv->lock, flags);
+	for (i = 0; i <= drv->num_fences_mask && n < ARRAY_SIZE(stranded); ++i) {
+		struct dma_fence *fence =
+			rcu_dereference_protected(drv->fences[i],
+						  lockdep_is_held(&drv->lock));
+		struct amdgpu_fence *am_fence;
+
+		if (!fence || dma_fence_is_signaled_locked(fence))
+			continue;
+		/* the engine must be provably past this fence's seqno */
+		if ((int32_t)(hw_seq - fence->seqno) <= 0)
+			continue;
+		am_fence = to_amdgpu_fence(fence);
+		if (ktime_before(now, ktime_add_ms(am_fence->start_timestamp,
+						   d7_reap_grace_ms)))
+			continue;
+		stranded[n++] = dma_fence_get(fence);
+	}
+	spin_unlock_irqrestore(&drv->lock, flags);
+
+	for (i = 0; i < n; ++i) {
+		dma_fence_set_error(stranded[i], -ECANCELED);
+		dma_fence_signal(stranded[i]);
+		dma_fence_put(stranded[i]);
+	}
+	if (n)
+		dev_warn(ring->adev->dev,
+			 "amdgpu ring %s: D7 reaped %d stranded fence(s) (hw past, unsignaled >%lums)\n",
+			 ring->name, n, d7_reap_grace_ms);
+}
+
+/* ... call site, at the end of amdgpu_fence_fallback()'s processing path: */
+
+	/* D7: after the normal path ran, reap anything it provably missed */
+	amdgpu_fence_reap_stranded(ring);

@@ -71,6 +71,17 @@ SAMPLES = {
         "amdgpu 0000:83:00.0: amdgpu: ring sdma0 state: wptr=0x00042fa0 "
         "rptr=0x00042f50 fence emitted=8515 signaled=8518 fallback_timer=armed"
     ),
+    # amdgpu.ko, amdgpu_fence_reap_stranded(). Rendered from the format string
+    # extracted from the module built 2026-09-18 03:45; not yet observed, and
+    # the reason it has not been is itself the finding - see
+    # kernel-patches/README.md. Note this format string does NOT carry the
+    # "amdgpu: " that D9-diag's does; it starts at "amdgpu ring", so the
+    # rendered line reads "...: amdgpu ring sdma0: D7 reaped". Getting that
+    # wrong would make the pattern look right and match nothing.
+    "d7_reap": (
+        "amdgpu 0000:83:00.0: amdgpu ring sdma0: D7 reaped 3 stranded "
+        "fence(s) (hw past, unsignaled >30000ms)"
+    ),
     # amdttm.ko, the pr_err after TTM_DEL_MAX_TRIES attempts.
     "ttm_giving_up": (
         "[TTM] ttm: BO 00000000deadbeef delete GIVING UP after 4 attempts "

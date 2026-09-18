@@ -62,10 +62,17 @@ RULES = [
     ("other_task_blocked", r"blocked for more than \d+ seconds", "warning"),
     # --- patch instrumentation ------------------------------------------
     # Every pattern below is transcribed from the printk format string in the
-    # corresponding diff under 0024:/root/incident_export/. Do not paraphrase
-    # them: test_patch_contract.py pins each one against the diff, because a
-    # patch rule that matches nothing looks exactly like a patch that never
-    # misbehaves. See d3_failover below for what that failure mode costs.
+    # module that is actually loaded on 0024, extracted with
+    #
+    #   for m in amd-sched amdttm amdgpu; do zstdcat $(modinfo -n $m) | strings; done
+    #
+    # NOT from the diffs under 0024:/root/incident_export/. Those diffs are a
+    # snapshot of what someone intended to build on 2026-09-16; the author's
+    # tree has moved past them twice since (first_pending_jiffies, the D9-diag
+    # hook, then D7 reaping on 09-18). Do not paraphrase these patterns:
+    # test_patch_contract.py pins each one against the extracted format string,
+    # because a patch rule that matches nothing looks exactly like a patch that
+    # never misbehaves. See d3_failover below for what that failure mode costs.
     ("d4_watchdog", r"D4 watchdog: fence context .* stalled", "patch"),
     # D4's own blind-spot report. d4_ctx_lookup() keeps 128 contexts and evicts
     # by smallest done_jiffies; a context that has never completed has
@@ -95,6 +102,21 @@ RULES = [
         r"amdgpu: ring \S+ state: wptr=.*fence emitted=\d+ signaled=\d+",
         "patch",
     ),
+    # D7 fence reaping, added to amdgpu.ko on 2026-09-18 (amdgpu_fence.c,
+    # amdgpu_fence_reap_stranded, run off the per-ring fallback timer). This is
+    # the one patch in the set that acts on hardware evidence rather than on a
+    # clock: it only error-completes a fence whose seqno the ring's hw writeback
+    # has *already passed* and that is still unsignaled past
+    # fence_reap_grace_ms. A fence the engine might still reach is never
+    # touched, so unlike D1 it cannot cancel live tenant work.
+    #
+    # That makes a nonzero count here the strongest positive evidence this patch
+    # set can produce: it means a completion was genuinely lost and was
+    # recovered, which is precisely the orphan-fence link in the August chain.
+    # Counted separately from d1_remediate for that reason - both force
+    # -ECANCELED, but one is proof of a real fault and the other is a timeout
+    # guess. As of 2026-09-18T07:30 this has fired 0 times on 0024.
+    ("d7_reap", r"D7 reaped \d+ stranded fence\(s\)", "patch"),
     ("ttm_giving_up", r"ttm: BO .* GIVING UP", "patch"),
     # D2's leading indicator, one per failed 30s attempt before the giveup at
     # attempt 4. This is the one that says D2 is actively holding the TTM
