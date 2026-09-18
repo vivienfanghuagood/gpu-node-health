@@ -1,0 +1,74 @@
+--- a/scheduler/sched_main.c
++++ b/scheduler/sched_main.c
+@@ -1269,6 +1269,12 @@
+ static unsigned long d4_watchdog_ms = 30000;
+ module_param(d4_watchdog_ms, ulong, 0644);
+ MODULE_PARM_DESC(d4_watchdog_ms, "D4 fence completion watchdog period in ms (default 30000)");
++static int d4_remediate = 1;
++module_param(d4_remediate, int, 0644);
++MODULE_PARM_DESC(d4_remediate, "D4 watchdog: force-complete stalled finished fences with -ECANCELED (default 1)");
++static unsigned long d4_remediate_ms = 30000;
++module_param(d4_remediate_ms, ulong, 0644);
++MODULE_PARM_DESC(d4_remediate_ms, "D4 remediation threshold in ms, hard-floored at 2x engine job-timeout (default 30000)");
+ #define DRM_SCHED_FENCE_WATCHDOG_PERIOD	msecs_to_jiffies(d4_watchdog_ms)
+ 
+ /* D4: exact-match context lookup; empty slot claim or LRU evict */
+@@ -1315,6 +1321,35 @@
+  * signaled) is invisible to it. Warn loudly when progress stalls
+  * with jobs pending.
+  */
++/* D4/D1: force-complete finished fences stalled on a context whose
++ * completion processing has demonstrably failed (watchdog expired).
++ * Signaling with -ECANCELED releases TTM/waiters and breaks the
++ * infinite-wait deadlock. Only called for contexts already past the
++ * engine-timeout recovery window, so the hw side is settled.
++ */
++static void d4_remediate_stalled_ctx(struct drm_gpu_scheduler *sched,
++				     u64 context)
++{
++	struct drm_sched_job *job;
++	int n = 0;
++
++	spin_lock(&sched->job_list_lock);
++	list_for_each_entry(job, &sched->pending_list, list) {
++		struct dma_fence *fin = &job->s_fence->finished;
++
++		if (fin->context != context || dma_fence_is_signaled(fin))
++			continue;
++		dma_fence_set_error(fin, -ECANCELED);
++		dma_fence_signal(fin);
++		n++;
++	}
++	spin_unlock(&sched->job_list_lock);
++	if (n)
++		dev_warn(sched->dev,
++			 "drm_sched %s: D1 remediate: force-signaled %d stalled fence(s) on context %llu with -ECANCELED\n",
++			 sched->name, n, context);
++}
++
+ static void drm_sched_fence_watchdog(struct work_struct *work)
+ {
+ 	struct drm_gpu_scheduler *sched =
+@@ -1330,11 +1365,21 @@
+ 			continue;
+ 		since = t->done_jiffies ? t->done_jiffies : t->emit_jiffies;
+ 		stale = jiffies > since ? jiffies - since : 0;
+-		if (stale > DRM_SCHED_FENCE_WATCHDOG_PERIOD)
++		if (stale > DRM_SCHED_FENCE_WATCHDOG_PERIOD) {
+ 			dev_warn_ratelimited(sched->dev,
+ 				"drm_sched %s: D4 watchdog: fence context %llu stalled: emitted=%u signaled=%u stale=%lus\n",
+ 				sched->name, t->context, t->emit_seq,
+ 				t->done_seq, stale / HZ);
++			/* D1 remediation fires only when the hw side is settled:
++			 * beyond both d4_remediate_ms and 2x engine job-timeout.
++			 * Detection (warn) may use aggressive thresholds for testing;
++			 * remediation must never fire on possibly-live work.
++			 */
++			if (d4_remediate &&
++			    stale > msecs_to_jiffies(d4_remediate_ms) &&
++			    stale > 2 * sched->timeout)
++				d4_remediate_stalled_ctx(sched, t->context);
++		}
+ 	}
+ 
+ 	queue_delayed_work(sched->timeout_wq, &sched->watchdog_work,

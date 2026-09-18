@@ -1,0 +1,16 @@
+--- a/ttm/ttm_bo_util.c
++++ b/ttm/ttm_bo_util.c
+@@ -642,7 +642,12 @@
+ 	 * this eviction and free up the allocation
+ 	 */
+ 	spin_lock(&from->move_lock);
+-	if (!from->move || dma_fence_is_later(fence, from->move)) {
++	/* D7: move fences from different sdma instances (D3 failover)
++	 * have different fence contexts and cannot be ordered; treat the
++	 * new fence as the most recent move instead of comparing seqnos
++	 * across contexts (which WARNs in dma_fence_is_later). */
++	if (!from->move || from->move->context != fence->context ||
++	    dma_fence_is_later(fence, from->move)) {
+ 		dma_fence_put(from->move);
+ 		from->move = dma_fence_get(fence);
+ 	}

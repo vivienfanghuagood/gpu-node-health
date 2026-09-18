@@ -56,10 +56,20 @@ SAMPLES = {
         "drm_sched sdma0: D4 watchdog: map evicted pending-stalled context "
         "1265 (emit=13742 done=13570)"
     ),
-    # amd-sched.ko, d4_remediate_stalled_ctx(). Never yet observed on any node.
+    # amd-sched.ko, d4_remediate_stalled_ctx() - observed verbatim (modulo the
+    # fence count) in kern.log 2026-09-15T05:04:11 on 0024, twice, on contexts
+    # 1263 and 1265. Those are the only two firings in the whole log history.
     "d1_remediate": (
         "amdgpu 0000:63:00.0: drm_sched sdma0: D1 remediate: force-signaled "
-        "3 stalled fence(s) on context 1265 with -ECANCELED"
+        "1 stalled fence(s) on context 1265 with -ECANCELED"
+    ),
+    # amdgpu.ko, amdgpu_job_show_ring_state(), emitted right after every
+    # d4_watchdog line. Observed verbatim 2026-09-18T05:23:57 on 0024. Note
+    # signaled > emitted: that is the hardware reporting a fully drained ring
+    # in the same instant D4 called the context stalled.
+    "d9_ring_state": (
+        "amdgpu 0000:83:00.0: amdgpu: ring sdma0 state: wptr=0x00042fa0 "
+        "rptr=0x00042f50 fence emitted=8515 signaled=8518 fallback_timer=armed"
     ),
     # amdttm.ko, the pr_err after TTM_DEL_MAX_TRIES attempts.
     "ttm_giving_up": (
@@ -82,9 +92,10 @@ KNOWN_DEAD = {
     "d3_failover": (
         "d3_pick_move_entity() selects an alternate SDMA entity with no printk "
         "on any path. Confirmed against the loaded module, not just the diff: "
-        "`zstdcat $(modinfo -n amdgpu) | strings` on 0024 yields no D3/D4/D1 "
-        "strings at all, while amd-sched.ko and amdttm.ko each yield their "
-        "full set. Needs a kernel-side dev_warn before this rule can fire. "
+        "`zstdcat $(modinfo -n amdgpu) | strings` on 0024 yields exactly one "
+        "patch format string, the D9-diag ring dump, and no D3 failover string "
+        "anywhere. amd-sched.ko and amdttm.ko each yield their full set, so the "
+        "absence is specific to D3. Needs a kernel-side dev_warn to fire. "
         "Until then a D3 failover - the precondition for the C0 cross-context "
         "fence loss - is unobservable."
     ),

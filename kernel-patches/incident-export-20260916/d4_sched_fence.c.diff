@@ -1,0 +1,12 @@
+--- a/scheduler/sched_fence.c
++++ b/scheduler/sched_fence.c
+@@ -240,6 +240,9 @@
+ 		       &fence->lock, entity->fence_context, seq);
+ 	dma_fence_init(&fence->finished, &drm_sched_fence_ops_finished,
+ 		       &fence->lock, entity->fence_context + 1, seq);
++
++	/* D4: record emission for the finished-fence context (exact map) */
++	d4_ctx_emit(entity->rq->sched, entity->fence_context + 1, seq);
+ }
+ 
+ module_init(drm_sched_fence_slab_init);

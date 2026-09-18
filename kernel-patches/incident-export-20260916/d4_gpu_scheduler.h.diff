@@ -1,0 +1,30 @@
+--- a/include/drm/gpu_scheduler.h
++++ b/include/drm/gpu_scheduler.h
+@@ -532,6 +532,17 @@
+ 	bool				pause_submit;
+ 	bool				own_submit_wq;
+ 	struct device			*dev;
++	/* D4: fence completion progress watchdog (exact context map) */
++#define D4_CTX_MAP_SIZE 128
++	struct d4_ctx_track {
++		u64			context;
++		unsigned int		emit_seq;
++		unsigned int		done_seq;
++		unsigned long		emit_jiffies;
++		unsigned long		done_jiffies;
++	} d4_ctx_map[D4_CTX_MAP_SIZE];
++	spinlock_t			d4_lock;
++	struct delayed_work		watchdog_work;
+ };
+ 
+ /**
+@@ -551,6 +562,9 @@
+  * @name: name (typically the driver's name). Used for debugging
+  * @dev: associated device. Used for debugging
+  */
++void d4_ctx_emit(struct drm_gpu_scheduler *sched, u64 context,
++		 unsigned int seq);
++
+ struct drm_sched_init_args {
+ 	const struct drm_sched_backend_ops *ops;
+ 	struct workqueue_struct *submit_wq;

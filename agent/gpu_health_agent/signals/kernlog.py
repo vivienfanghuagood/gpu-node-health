@@ -81,6 +81,20 @@ RULES = [
         "patch",
     ),
     ("d1_remediate", r"D1 remediate: force-signal", "patch"),
+    # D9-diag, emitted by amdgpu_job_show_ring_state() immediately after every
+    # d4_watchdog line via sched->ops->show_ring_state. It is the hardware's
+    # account of the same moment, and it is the only thing that can tell a real
+    # stall from a D4 false positive: if the ring reports signaled >= emitted
+    # while D4 reports a fence context stalled, the hardware is drained and the
+    # stall is in the scheduler's bookkeeping, not on the GPU. Observed doing
+    # exactly that on 0024 on 2026-09-18; see kernel-patches/README.md.
+    # Counted as its own rule so the ratio of the two is visible - a D4 count
+    # that tracks this one 1:1 is a detector reporting on itself.
+    (
+        "d9_ring_state",
+        r"amdgpu: ring \S+ state: wptr=.*fence emitted=\d+ signaled=\d+",
+        "patch",
+    ),
     ("ttm_giving_up", r"ttm: BO .* GIVING UP", "patch"),
     # D2's leading indicator, one per failed 30s attempt before the giveup at
     # attempt 4. This is the one that says D2 is actively holding the TTM
@@ -95,11 +109,10 @@ RULES = [
     # KNOWN DEAD - kept deliberately, with this comment, until the kernel side
     # grows a printk. d3_pick_move_entity() returns an alternate SDMA entity
     # silently. This is not inferred from reading the diff; it is confirmed
-    # against the module that is currently loaded on 0024:
-    #
-    #   zstdcat $(modinfo -n amdgpu) | strings | grep -E 'D4 watchdog|D1 |D3: '
-    #   -> no matches at all, while amd-sched.ko and amdttm.ko each yield their
-    #      full set of patch strings
+    # against the module that is currently loaded on 0024 - amdgpu.ko carries
+    # exactly one patch format string, the D9-diag ring dump above, and no D3
+    # failover string on any path. (amd-sched.ko and amdttm.ko each carry their
+    # full set, so the absence is specific to D3, not to the module.)
     #
     # So the pattern cannot fire, and its 0 is structural. That matters more
     # than it sounds. A D3 failover is the exact precondition for the D3+D7

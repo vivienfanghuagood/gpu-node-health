@@ -1,0 +1,98 @@
+--- a/amd/amdgpu/amdgpu_ttm.c
++++ b/amd/amdgpu/amdgpu_ttm.c
+@@ -2555,7 +2555,35 @@
+ 				  r);
+ 			goto error_free_entity;
+ 		}
++
++		/* D3: init failover move entities on alternate sdma instances */
++		{
++			int i;
++
++			for (i = 0; i < adev->sdma.num_instances && i < 8; i++) {
++				struct amdgpu_ring *ar = &adev->sdma.instance[i].ring;
++
++				if (ar == adev->mman.buffer_funcs_ring)
++					continue;
++				{
++					struct drm_gpu_scheduler *asched = &ar->sched;
++
++					if (!drm_sched_entity_init(&adev->mman.d3_pr[i],
++								   DRM_SCHED_PRIORITY_KERNEL,
++								   &asched, 1, NULL))
++						adev->mman.d3_pr_inited[i] = true;
++				}
++			}
++		}
+ 	} else {
++		int i;
++
++		for (i = 0; i < 8; i++) {
++			if (adev->mman.d3_pr_inited[i]) {
++				drm_sched_entity_destroy(&adev->mman.d3_pr[i]);
++				adev->mman.d3_pr_inited[i] = false;
++			}
++		}
+ 		drm_sched_entity_destroy(&adev->mman.high_pr);
+ 		drm_sched_entity_destroy(&adev->mman.low_pr);
+ 		dma_fence_put(man->move);
+@@ -2576,6 +2604,49 @@
+ 	drm_sched_entity_destroy(&adev->mman.high_pr);
+ }
+ 
++/* D3: consider a ring's sched stalled if any fence context has
++ * pending emissions with completion progress stale beyond 2x the
++ * engine job-timeout (i.e. hw side should be settled by now).
++ */
++static bool d3_ring_sched_stalled(struct amdgpu_ring *ring)
++{
++	struct drm_gpu_scheduler *sched = &ring->sched;
++	int i;
++
++	for (i = 0; i < D4_CTX_MAP_SIZE; i++) {
++		struct d4_ctx_track *t = &sched->d4_ctx_map[i];
++		unsigned long since;
++
++		if (!t->context || t->emit_seq <= t->done_seq)
++			continue;
++		since = t->done_jiffies ? t->done_jiffies : t->emit_jiffies;
++		if (jiffies > since + 2 * sched->timeout)
++			return true;
++	}
++	return false;
++}
++
++/* D3: pick a move entity on a non-stalled sdma instance; if the
++ * default move ring's sched is stalled, fail over to an alternate
++ * instance's entity so eviction/restore moves can still complete.
++ */
++static struct drm_sched_entity *d3_pick_move_entity(struct amdgpu_device *adev,
++						    bool delayed)
++{
++	int i;
++
++	if (!d3_ring_sched_stalled(adev->mman.buffer_funcs_ring))
++		return delayed ? &adev->mman.low_pr : &adev->mman.high_pr;
++
++	for (i = 0; i < adev->sdma.num_instances && i < 8; i++) {
++		if (!adev->mman.d3_pr_inited[i])
++			continue;
++		if (!d3_ring_sched_stalled(&adev->sdma.instance[i].ring))
++			return &adev->mman.d3_pr[i];
++	}
++	return delayed ? &adev->mman.low_pr : &adev->mman.high_pr;
++}
++
+ static int amdgpu_ttm_prepare_job(struct amdgpu_device *adev,
+ 				  bool direct_submit,
+ 				  unsigned int num_dw,
+@@ -2588,8 +2659,7 @@
+ 		AMDGPU_IB_POOL_DIRECT :
+ 		AMDGPU_IB_POOL_DELAYED;
+ 	int r;
+-	struct drm_sched_entity *entity = delayed ? &adev->mman.low_pr :
+-						    &adev->mman.high_pr;
++	struct drm_sched_entity *entity = d3_pick_move_entity(adev, delayed);
+ 	r = amdgpu_job_alloc_with_ib(adev, entity,
+ 				     AMDGPU_FENCE_OWNER_UNDEFINED,
+ 				     num_dw * 4, pool, job);

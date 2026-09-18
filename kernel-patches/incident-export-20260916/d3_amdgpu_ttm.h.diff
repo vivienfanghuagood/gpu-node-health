@@ -1,0 +1,12 @@
+--- a/amd/amdgpu/amdgpu_ttm.h
++++ b/amd/amdgpu/amdgpu_ttm.h
+@@ -76,6 +76,9 @@
+ 	struct drm_sched_entity			high_pr;
+ 	/* Low priority scheduler entity for VRAM clearing */
+ 	struct drm_sched_entity			low_pr;
++	/* D3: failover move entities on alternate sdma instances (max 8) */
++	struct drm_sched_entity			d3_pr[8];
++	bool					d3_pr_inited[8];
+ 
+ 	struct amdgpu_vram_mgr vram_mgr;
+ 	struct amdgpu_gtt_mgr gtt_mgr;

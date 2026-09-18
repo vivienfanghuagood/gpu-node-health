@@ -1,0 +1,43 @@
+--- a/ttm/ttm_bo.c
++++ b/ttm/ttm_bo.c
+@@ -232,14 +232,38 @@
+  * Block for the dma_resv object to become idle, lock the buffer and clean up
+  * the resource and tt object.
+  */
++#define TTM_DEL_WAIT_JIFFIES	(30UL * HZ)
++#define TTM_DEL_MAX_TRIES	4
++
+ static void ttm_bo_delayed_delete(struct work_struct *work)
+ {
+ 	struct ttm_buffer_object *bo;
++	long ret = 0;
++	int try;
+ 
+ 	bo = container_of(work, typeof(*bo), delayed_delete);
+ 
+-	dma_resv_wait_timeout(amdkcl_ttm_resvp(bo), DMA_RESV_USAGE_BOOKKEEP, false,
+-			      MAX_SCHEDULE_TIMEOUT);
++	/* D2: bounded wait with backoff retries instead of MAX_SCHEDULE_TIMEOUT.
++	 * A fence that never signals must not wedge the whole per-device TTM
++	 * workqueue forever. Give up loudly and leak the BO (GPU may still
++	 * touch its pages) rather than hang the worker permanently.
++	 */
++	for (try = 0; try < TTM_DEL_MAX_TRIES; try++) {
++		ret = dma_resv_wait_timeout(amdkcl_ttm_resvp(bo),
++					    DMA_RESV_USAGE_BOOKKEEP, false,
++					    TTM_DEL_WAIT_JIFFIES);
++		if (ret)
++			break;
++		pr_warn_ratelimited("ttm: BO %p delete blocked on unsignaled fences (attempt %d/%d)\n",
++				    bo, try + 1, TTM_DEL_MAX_TRIES);
++	}
++	if (!ret) {
++		pr_err("ttm: BO %p delete GIVING UP after %d attempts (~%lus); fences never signaled. Leaking BO instead of hanging TTM workqueue.\n",
++		       bo, TTM_DEL_MAX_TRIES,
++		       (TTM_DEL_WAIT_JIFFIES * TTM_DEL_MAX_TRIES) / HZ);
++		return;
++	}
++
+ 	dma_resv_lock(amdkcl_ttm_resvp(bo), NULL);
+ 	ttm_bo_cleanup_memtype_use(bo);
+ 	dma_resv_unlock(amdkcl_ttm_resvp(bo));
