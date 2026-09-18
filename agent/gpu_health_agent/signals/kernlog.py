@@ -61,9 +61,53 @@ RULES = [
     # busy NFS mount does not masquerade as a GPU fault.
     ("other_task_blocked", r"blocked for more than \d+ seconds", "warning"),
     # --- patch instrumentation ------------------------------------------
+    # Every pattern below is transcribed from the printk format string in the
+    # corresponding diff under 0024:/root/incident_export/. Do not paraphrase
+    # them: test_patch_contract.py pins each one against the diff, because a
+    # patch rule that matches nothing looks exactly like a patch that never
+    # misbehaves. See d3_failover below for what that failure mode costs.
     ("d4_watchdog", r"D4 watchdog: fence context .* stalled", "patch"),
+    # D4's own blind-spot report. d4_ctx_lookup() keeps 128 contexts and evicts
+    # by smallest done_jiffies; a context that has never completed has
+    # done_jiffies == 0, so the stalled context the watchdog exists to catch is
+    # the first one dropped. This line says that just happened - i.e. D4 has
+    # stopped watching the thing it was watching. It is not a patch working, it
+    # is the patch losing its subject, so it matters more than d4_watchdog does.
+    # Kernel-side fix (skip pending-stalled entries when choosing a victim) is
+    # written but not yet built; until then this is the only way to know.
+    (
+        "d4_map_evicted",
+        r"D4 watchdog: map evicted pending-stalled context",
+        "patch",
+    ),
     ("d1_remediate", r"D1 remediate: force-signal", "patch"),
     ("ttm_giving_up", r"ttm: BO .* GIVING UP", "patch"),
+    # D2's leading indicator, one per failed 30s attempt before the giveup at
+    # attempt 4. This is the one that says D2 is actively holding the TTM
+    # workqueue open; ttm_giving_up only says it already gave up and leaked.
+    # A node that emits these and then stops has been saved by D2 - which is
+    # the only positive evidence the patch set can currently produce.
+    (
+        "ttm_delete_blocked",
+        r"ttm: BO .* delete blocked on unsignaled fences",
+        "patch",
+    ),
+    # KNOWN DEAD - kept deliberately, with this comment, until the kernel side
+    # grows a printk. d3_pick_move_entity() returns an alternate SDMA entity
+    # silently. This is not inferred from reading the diff; it is confirmed
+    # against the module that is currently loaded on 0024:
+    #
+    #   zstdcat $(modinfo -n amdgpu) | strings | grep -E 'D4 watchdog|D1 |D3: '
+    #   -> no matches at all, while amd-sched.ko and amdttm.ko each yield their
+    #      full set of patch strings
+    #
+    # So the pattern cannot fire, and its 0 is structural. That matters more
+    # than it sounds. A D3 failover is the exact precondition for the D3+D7
+    # cross-context fence loss (C0 in docs/gpu-hang-stability-plan.md), i.e.
+    # the one path in this patch set that corrupts VRAM silently instead of
+    # hanging visibly. Today the most dangerous event the patches can cause is
+    # also the only one they do not report. Blocked on a kernel-side dev_warn
+    # in d3_pick_move_entity().
     ("d3_failover", r"D3: .*failover", "patch"),
 ]
 
